@@ -367,7 +367,10 @@ def _segment_interview(interview_id: str, df_interview: pd.DataFrame, cache: dic
             rows = [idx_to_row[i] for i in range(clip.start_paragraph_idx, clip.end_paragraph_idx + 1)]
             total_words = sum(int(r.word_count) for r in rows)
             start_ts = effective_timestamp(rows[0].turn_time_start, rows[0].sub_time_start)
-            end_ts = effective_timestamp(rows[-1].turn_time_start, rows[-1].sub_time_start)
+            #end_ts = effective_timestamp(rows[-1].turn_time_start, rows[-1].sub_time_start)
+            after = idx_to_row.get(clip.end_paragraph_idx + 1)
+            end_ts = effective_timestamp(after.turn_time_start, after.sub_time_start) if after else ""  
+            
             start_s = ts_to_seconds(start_ts)
             end_s = ts_to_seconds(end_ts)
             duration_s = (end_s - start_s) if (start_s is not None and end_s is not None) else None
