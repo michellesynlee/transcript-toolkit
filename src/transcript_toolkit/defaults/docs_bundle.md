@@ -1274,6 +1274,15 @@ it overwrites the file. `toolkit status` shows what the next export would includ
   reference columns. These follow the same mode, so you never see a reference value that appears
   in no row.
 
+## A project prefix on every id
+
+`config.yaml` → `export.id_prefix` (e.g. `osf_`) is put in front of every Clip Id, Interview and
+Session the spreadsheet shows — `osf_fake_alpha_20240101_session1_0001` — so ids from different
+projects stay distinct once their sheets are combined. It is a fact about the spreadsheet only:
+the workspace's own files, review pages and `label_overrides.csv` keep the plain ids, and changing
+the prefix takes a re-export and nothing else. Labels you edited in the previous sheet are still
+found and kept, whatever prefix that sheet was written with.
+
 ## How locations appear
 
 The tagger records **countries** and **regions** separately, and `toolkit locations map` expands
@@ -1416,6 +1425,9 @@ locations:
   directly), `countries_and_regions` (default; those countries plus a separate Regions column), or
   `countries_incl_regions` (one column, with regions mapped down into it). See
   [steps/export.md](steps/export.md).
+- **export.id_prefix** — put in front of every Clip Id, Interview and Session in the xlsx, e.g.
+  `osf_`, so ids from different projects never collide once combined. Empty (default) for none.
+  Only the spreadsheet changes; changing it takes a re-export and nothing else.
 
 ## `advanced/<step>.yaml`
 

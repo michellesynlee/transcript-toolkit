@@ -67,6 +67,7 @@ FIELDS: tuple[Field, ...] = (
     Field("locations.place_tags", "Places tagged in their own right", WORDS, "locations"),
 
     Field("export.locations", "How places appear in the spreadsheet", CHOICE, "export"),
+    Field("export.id_prefix", "Prefix added to every ID", TEXT, "export"),
 )
 
 BY_PATH = {f.path: f for f in FIELDS}

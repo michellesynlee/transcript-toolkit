@@ -148,6 +148,44 @@ def test_a_label_edited_in_the_sheet_survives_the_next_export(project):
     assert overrides.load(project).empty
 
 
+
+def _edit_first_label(out, new_label):
+    from openpyxl import load_workbook
+    wb = load_workbook(out)
+    ws = wb["Clips"]
+    header = [c.value for c in ws[1]]
+    ws.cell(row=2, column=header.index("Label") + 1).value = new_label
+    wb.save(out)
+    wb.close()
+
+
+def _set_prefix(project, old, new):
+    cfg = project.config_path
+    text = cfg.read_text()
+    assert text.count(f'id_prefix: "{old}"') == 1
+    cfg.write_text(text.replace(f'id_prefix: "{old}"', f'id_prefix: "{new}"'))
+
+
+@pytest.mark.parametrize("before, after", [("osf_", "osf_"), ("osf_", "shenton_"), ("", "osf_")])
+def test_a_sheet_edit_survives_with_an_id_prefix_even_one_changed_since(project, before, after):
+    """The sheet shows prefixed ids and the pipeline does not; reading the sheet back must still
+    find each clip, with whatever prefix that sheet was written with."""
+    from transcript_toolkit.steps.export import run_export
+
+    fabricate_labels(project)
+    _set_prefix(project, "", before)
+    run_export(project)
+    assert json.loads(project.export_manifest_path.read_text())["labels"] == {
+        "fake_beta_0001": "Growing up by the sea", "fake_beta_0002": "University years"}
+
+    _edit_first_label(project.outputs_dir / "export.xlsx", "Growing up by the shore")
+    _set_prefix(project, before, after)
+    run_export(project)
+
+    saved = overrides.load(project)
+    assert list(saved["clip_id"]) == ["fake_beta_0001"]
+    assert saved.iloc[0]["label"] == "Growing up by the shore"
+
 # --- the review page -------------------------------------------------------------------------
 
 def paras_frame() -> pd.DataFrame:

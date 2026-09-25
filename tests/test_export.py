@@ -237,3 +237,32 @@ def test_a_transcript_that_was_never_syncd_says_so_in_the_export(project):
     header = sheet[0]
     said = {r[header.index("Interview")]: r[header.index("Transcript")] for r in sheet[1:]}
     assert said == {"fake_beta": "SYNC'd", "fake_gamma": "not SYNC'd"}
+
+
+def _set_prefix(project, prefix):
+    cfg = project.config_path
+    text = cfg.read_text()
+    assert text.count('id_prefix: ""') == 1
+    cfg.write_text(text.replace('id_prefix: ""', f'id_prefix: "{prefix}"'))
+
+
+def test_id_prefix_goes_on_every_id_the_sheet_shows(project):
+    _clips(project)
+    _write(project, "summaries/summaries.parquet", pd.DataFrame([
+        {"interview_key": "fake_alpha",
+         "session_ids": "fake_alpha_20240101_session1|fake_alpha_20240108_session2",
+         "n_sessions": 2, "n_paragraphs": 5, "total_words": 100, "summary": "An abstract.",
+         "summary_word_count": 2, "model": "m", "reasoning_effort": "r"}]))
+    _set_prefix(project, "osf_")
+    run_export(project)
+    sheets = _sheets(project.outputs_dir / "export.xlsx")
+    alpha = next(r for r in sheets["Clips"][1:] if r[0].startswith("osf_fake_alpha"))
+    assert alpha[:3] == ["osf_fake_alpha_20240101_session1_0001", "osf_fake_alpha",
+                         "osf_fake_alpha_20240101_session1"]
+    header, row = sheets["Interviews"][0], sheets["Interviews"][1]
+    assert row[header.index("Interview")] == "osf_fake_alpha"
+    assert row[header.index("Sessions")] == ("osf_fake_alpha_20240101_session1, "
+                                             "osf_fake_alpha_20240108_session2")
+    # only the sheet: the pipeline's own ids are untouched
+    assert pd.read_parquet(project.outputs_dir / "clips" / "clips.parquet")["clip_id"].iloc[0] \
+        == "fake_beta_0001"

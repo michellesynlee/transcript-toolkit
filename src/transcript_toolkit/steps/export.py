@@ -45,6 +45,11 @@ def _location_mode(project: Project, override: str | None = None) -> str:
     return mode
 
 
+def _id_prefix(project: Project) -> str:
+    """`export.id_prefix`: put in front of every id the spreadsheet shows, and nowhere else."""
+    return str(load_step_config(project, "export").get("id_prefix") or "")
+
+
 def _read(path):
     return pd.read_parquet(path) if path.exists() else None
 
@@ -85,10 +90,11 @@ def build_clips_sheet(project: Project, sets: list[str],
         raise ToolkitError("No clips yet — run `toolkit clip` first (export needs at least clips).")
 
     session_regex = load_step_config(project, "import")["session_regex"]
+    prefix = _id_prefix(project)
     df = pd.DataFrame({
-        "Clip Id": clips["clip_id"],
-        "Interview": clips["interview_id"].map(lambda i: narrator_key(i, session_regex)),
-        "Session": clips["interview_id"],
+        "Clip Id": prefix + clips["clip_id"],
+        "Interview": clips["interview_id"].map(lambda i: prefix + narrator_key(i, session_regex)),
+        "Session": prefix + clips["interview_id"],
         "Start": clips["start_ts"],
         "End": clips["end_ts"],
     })
@@ -131,10 +137,11 @@ def build_clips_sheet(project: Project, sets: list[str],
 def build_interviews_sheet(project: Project, sets: list[str],
                            location_mode: str = DEFAULT_LOCATION_MODE) -> pd.DataFrame | None:
     session_regex = load_step_config(project, "import")["session_regex"]
+    prefix = _id_prefix(project)
     frames: dict[str, dict] = {}
 
     def row(key: str) -> dict:
-        return frames.setdefault(key, {"Interview": key})
+        return frames.setdefault(key, {"Interview": prefix + key})
 
     summaries = _read(project.outputs_dir / "summaries" / "summaries.parquet")
     if summaries is not None:
@@ -144,7 +151,7 @@ def build_interviews_sheet(project: Project, sets: list[str],
         some_unsynced = "synced" in summaries.columns and not summaries["synced"].all()
         for r in summaries.itertuples():
             rr = row(r.interview_key)
-            rr["Sessions"] = str(r.session_ids).replace("|", ", ")
+            rr["Sessions"] = ", ".join(prefix + s for s in str(r.session_ids).split("|"))
             rr["Summary"] = r.summary
             if some_unsynced:
                 rr["Transcript"] = "SYNC'd" if getattr(r, "synced", True) else "not SYNC'd"
@@ -227,10 +234,12 @@ def build_categories_sheet(project: Project, sets: list[str],
     return pd.DataFrame({k: v + [""] * (width - len(v)) for k, v in columns.items()})
 
 
-def _write_export_manifest(project: Project, clips_df: pd.DataFrame) -> None:
+def _write_export_manifest(project: Project, clips_df: pd.DataFrame, prefix: str) -> None:
     """What this export said each label was — the reference the next export diffs the sheet
     against. A cell that differs from it was edited by a person; a cell that matches was not,
-    even if the pipeline has re-labeled since."""
+    even if the pipeline has re-labeled since. Keyed by the pipeline's own clip id, with the
+    prefix the sheet showed recorded beside it, so the next export can read this sheet back
+    even if `export.id_prefix` has changed in between."""
     import json
 
     if "Label" not in clips_df.columns:
@@ -238,7 +247,9 @@ def _write_export_manifest(project: Project, clips_df: pd.DataFrame) -> None:
     project.export_manifest_path.parent.mkdir(parents=True, exist_ok=True)
     project.export_manifest_path.write_text(json.dumps({
         "schema": 1,
-        "labels": dict(zip(clips_df["Clip Id"].astype(str), clips_df["Label"].astype(str))),
+        "id_prefix": prefix,
+        "labels": {cid[len(prefix):]: lab for cid, lab in
+                   zip(clips_df["Clip Id"].astype(str), clips_df["Label"].astype(str))},
     }, indent=2) + "\n")
 
 
@@ -252,7 +263,9 @@ def _harvest_sheet_edits(project: Project, out_path: Path, clips_tab: str) -> in
 
     if not out_path.exists() or not project.export_manifest_path.exists():
         return 0
-    last = (json.loads(project.export_manifest_path.read_text()).get("labels")) or {}
+    manifest = json.loads(project.export_manifest_path.read_text())
+    last = manifest.get("labels") or {}
+    old_prefix = manifest.get("id_prefix") or ""
     labels = _read(project.outputs_dir / "labels" / "labels.parquet")
     if not last or labels is None:
         return 0
@@ -281,6 +294,8 @@ def _harvest_sheet_edits(project: Project, out_path: Path, clips_tab: str) -> in
     kept = 0
     for row in rows:
         cid = None if row[id_col] is None else str(row[id_col])
+        if cid and old_prefix and cid.startswith(old_prefix):
+            cid = cid[len(old_prefix):]     # the sheet shows ids with the prefix it was written with
         if not cid or cid not in model_label:
             continue                    # a clip this pipeline no longer knows — nothing to pin
         sheet_label = "" if row[label_col] is None else str(row[label_col])
@@ -333,7 +348,7 @@ def run_export(project: Project, out: str | None = None, locations: str | None =
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
-    _write_export_manifest(project, clips_df)
+    _write_export_manifest(project, clips_df, _id_prefix(project))
 
     print(f"Wrote {out_path}")
     if kept:

@@ -94,6 +94,7 @@ EVERY_KIND = [
     ("label.addendum", "prompt_addendums/label_addendum.md"),
     ("label.addendum", None),
     ("export.locations", "countries"),
+    ("export.id_prefix", "osf_"),
     ("project.name", "A Project: With Punctuation"),
 ]
 

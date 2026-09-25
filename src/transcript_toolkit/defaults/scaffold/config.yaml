@@ -110,3 +110,6 @@ export:
   #   countries_incl_regions — one Locations column: direct countries PLUS the regions
   #                            mapped down to their countries (region_to_country.csv)
   locations: countries_and_regions
+  # Added to the front of every Clip Id, Interview and Session in the spreadsheet, e.g. "osf_".
+  # Leave empty for none. Changing it only takes a re-export — nothing is re-run or re-paid for.
+  id_prefix: ""

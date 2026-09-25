@@ -93,6 +93,9 @@ locations:
   directly), `countries_and_regions` (default; those countries plus a separate Regions column), or
   `countries_incl_regions` (one column, with regions mapped down into it). See
   [steps/export.md](steps/export.md).
+- **export.id_prefix** — put in front of every Clip Id, Interview and Session in the xlsx, e.g.
+  `osf_`, so ids from different projects never collide once combined. Empty (default) for none.
+  Only the spreadsheet changes; changing it takes a re-export and nothing else.
 
 ## `advanced/<step>.yaml`
 
