@@ -84,13 +84,16 @@ def test_export_incremental_adds_columns(project):
     # deliverables directly, so register it here.
     register_topic_set(project, "main", "topics/main.csv")
     _write(project, "topics/main_clip_topics_long.parquet", pd.DataFrame([
-        {"clip_id": "fake_beta_0001", "interview_id": "fake_beta", "topic_id": "career",
+        {"clip_id": "fake_beta_0001", "interview_id": "fake_beta", "topic_id": "career_and_work",
          "topic_name": "Career and Work", "score": 2, "justification": ""},
         {"clip_id": "fake_beta_0001", "interview_id": "fake_beta", "topic_id": "education",
          "topic_name": "Education", "score": 1, "justification": ""}]))
     _write(project, "topics/main_interview_topics_wide.parquet", pd.DataFrame([
-        {"interview_key": "fake_beta", "n_sessions": 1, "n_clips": 1, "topics": "Career and Work",
+        {"interview_key": "fake_beta", "n_sessions": 1, "n_clips": 1, "topics": "career_and_work",
          "n_topics": 1}]))
+    _write(project, "topics/main_interview_topics_long.parquet", pd.DataFrame([
+        {"interview_key": "fake_beta", "topic_id": t, "topic_name": n, "tagged": t != "education"}
+        for t, n in [("career_and_work", "Career and Work"), ("education", "Education")]]))
     run_export(project)
     sheets = _sheets(project.outputs_dir / "export.xlsx")
     clips_header = sheets["Clips"][0]
@@ -100,6 +103,10 @@ def test_export_incremental_adds_columns(project):
     assert beta_row[clips_header.index("Topics: main")] == "Career and Work"
     assert "Interviews" in sheets
     assert sheets["Interviews"][0][:1] == ["Interview"]
+    iv_header = sheets["Interviews"][0]
+    iv_row = next(r for r in sheets["Interviews"][1:] if r[0] == "fake_beta")
+    # the rollup stores ids; the sheet shows names, like the Clips tab
+    assert iv_row[iv_header.index("Topics: main")] == "Career and Work"
     assert "Categories" in sheets
     cat_header = sheets["Categories"][0]
     assert "Topics: main" in cat_header                        # vocabulary from the topic list

@@ -159,8 +159,13 @@ def build_interviews_sheet(project: Project, sets: list[str],
     for set_name in sets:
         wide = _read(project.outputs_dir / "topics" / f"{set_name}_interview_topics_wide.parquet")
         if wide is not None:
+            # the wide table's `topics` holds ids; the sheet shows names, as the Clips tab does
+            long = _read(project.outputs_dir / "topics" / f"{set_name}_interview_topics_long.parquet")
+            name_by_id = dict(zip(long["topic_id"], long["topic_name"]))
             for r in wide.itertuples():
-                row(r.interview_key)[f"Topics: {set_name}"] = str(r.topics).replace("|", ", ")
+                ids = [t for t in str(r.topics).split("|") if t]
+                row(r.interview_key)[f"Topics: {set_name}"] = ", ".join(
+                    sorted(name_by_id[t] for t in ids))
 
     loc = _read(project.outputs_dir / "locations" / "interview_locations_wide.parquet")
     if loc is not None:
