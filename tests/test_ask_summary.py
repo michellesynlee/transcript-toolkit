@@ -158,3 +158,20 @@ def test_the_prompt_forbids_guessing_pronouns_and_stretching():
             / "ask_summary.md").read_text()
     assert "Never guess anyone's gender from a name" in text
     assert "say so plainly" in text
+
+
+@pytest.mark.parametrize("raw,clean", [
+    ("They care for one another.】【。", "They care for one another."),
+    ("They care for one another【", "They care for one another."),
+    ("  Plain   sentence.  ", "Plain sentence."),
+])
+def test_stray_marks_are_tidied_away(raw, clean):
+    assert ask_summary.tidy(raw) == clean
+
+
+def test_a_summary_saved_before_the_tidying_shows_clean(tagged):
+    from transcript_toolkit.core.cache import JsonlAppender
+    p = ask_summary.prepare(tagged, EDUCATION, TITLE)
+    JsonlAppender(ask_summary.cache_path(tagged)).append(
+        {"cache_key": p.key, "summary": "Ann loved school.】【。", "ts": "2026-10-22T00:00:00"})
+    assert ask_summary.saved(tagged, p) == "Ann loved school."

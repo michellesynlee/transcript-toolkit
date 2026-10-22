@@ -62,7 +62,7 @@ def _call(project: Project, p: ask_summary.Prepared) -> str:
                              cache_key(model, reasoning, verbosity, p.instructions),
                              poll_interval_s=float(cfg.get("poll_interval_s", 4)),
                              max_total_wait_s=float(cfg.get("max_total_wait_s", 300)))
-    summary = (parsed.get("summary") or "").strip()
+    summary = ask_summary.tidy(parsed.get("summary") or "")
     # One record per paid call: this is what `toolkit cost` adds up.
     JsonlAppender(ask_summary.cache_path(project)).append({
         "cache_key": p.key, "fingerprint": cache_key(model, reasoning, verbosity, p.instructions),

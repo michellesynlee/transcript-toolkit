@@ -11,6 +11,7 @@ Every answer also gets a sentence from its counts alone, free and always there: 
 """
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass, replace
 from importlib import resources
@@ -196,7 +197,17 @@ def prepare(project: Project, question: ask.Question, title: str,
 def saved(project: Project, prepared: Prepared) -> str | None:
     """The summary, when this exact call has already been paid for."""
     hit = latest_records(cache_path(project), "cache_key").get(prepared.key)
-    return hit["summary"] if hit else None
+    return tidy(hit["summary"]) if hit else None
+
+
+# Models sometimes trail an answer with stray brackets or full-width punctuation ("】【。").
+# Read-time as well as write-time, so a summary already paid for is shown clean too.
+STRAY = re.compile(r"[【】〔〕「」『』。、]")
+
+
+def tidy(summary: str) -> str:
+    text = re.sub(r"\s+", " ", STRAY.sub("", summary)).strip()
+    return text if not text or text[-1] in ".!?" else text + "."
 
 
 @dataclass(frozen=True)
