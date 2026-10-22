@@ -11,6 +11,10 @@ import transcript_toolkit.core.update as upd
 def isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(upd, "_cache_path", lambda: tmp_path / "update_check.json")
     monkeypatch.delenv("TOOLKIT_NO_UPDATE_CHECK", raising=False)
+    # Where uv installs `toolkit`: empty here, so a toolkit installed on the machine running the
+    # tests is never the one asked its version. A test about that sets its own.
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(tmp_path / "no-tools"))
+    monkeypatch.delenv("XDG_BIN_HOME", raising=False)
 
 
 def test_parse_and_compare_versions():
