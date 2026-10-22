@@ -301,3 +301,8 @@ async def test_nothing_to_summarize_says_so_without_a_button(user: User, open_ta
     await user.open(view_href(q))
     await user.should_see("Nothing in the transcripts matches this.")
     await user.should_not_see(marker="ask-summary")
+
+
+def test_marking_marks_whole_words_the_way_they_matched():
+    assert marked("Communities, a party", ["community", "art"]) == \
+        '<mark class="tk-found">Communities</mark>, a party'

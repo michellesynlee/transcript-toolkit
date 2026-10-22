@@ -12,9 +12,7 @@ Every answer also gets a sentence from its counts alone, free and always there: 
 from __future__ import annotations
 
 import re
-import shutil
 from dataclasses import dataclass, replace
-from importlib import resources
 
 import pandas as pd
 
@@ -30,23 +28,7 @@ STEP = "ask"
 # One token is about four characters of English. An estimate for the button, never a charge:
 # what is paid is what the call reports.
 CHARS_PER_TOKEN = 4
-# What a project made before AI summaries existed is missing, copied in on first use.
-NEW_FILES = (("scaffold/advanced/ask.yaml", "advanced/ask.yaml"),
-             ("prompts/ask_summary.md", "prompts/ask_summary.md"))
-
-
-def add_missing_files(project: Project) -> list[str]:
-    """Copy in the defaults this feature needs that the project does not have. Never overwrites."""
-    defaults = resources.files("transcript_toolkit") / "defaults"
-    added = []
-    for src, dest in NEW_FILES:
-        path = project.root / dest
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with resources.as_file(defaults / src) as f:
-                shutil.copyfile(f, path)
-            added.append(dest)
-    return added
+add_missing_files = ask.add_missing_files           # shared with the engine's settings
 
 
 def settings(project: Project) -> dict:

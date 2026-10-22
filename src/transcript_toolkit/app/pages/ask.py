@@ -133,7 +133,8 @@ class _Asker:
             ui.button("Ask", icon="search", on_click=self.ask_quick) \
                 .props("color=primary").mark("ask")
         if typeable:
-            ui.label("Pick from the list, or type any word to search the transcripts for it.") \
+            ui.label("Pick from the list, or type any word to search the transcripts for it. "
+                     "Separate several with commas: any of them will do.") \
                 .classes("text-xs opacity-60")
 
     def _blank(self, i: int, key: str) -> None:
@@ -223,7 +224,10 @@ class _Asker:
                 ui.button("or…", icon="add", on_click=lambda: self.add("rows", "or")) \
                     .props("flat dense no-caps")
                 info("“and” narrows: both must be true. “or” widens: either will do.\n"
-                     "“A and B or C” means (A and B) or C.")
+                     "“A and B or C” means (A and B) or C.\n\n"
+                     "Words match from their start, in any case: “art” finds “artist” but not "
+                     "“party”; “communit” finds “community” and “communities”. "
+                     "“Contains the whole word” matches the word exactly.")
             if s["verb"] == "compare":
                 ui.label("Compare these groups (one column each):").classes("text-sm mt-2")
                 for i, row in enumerate(s["groups"]):
@@ -540,11 +544,13 @@ def summary_card(summary: str, m: ask_summary.Material) -> None:
 
 
 def marked(text: str, words: list[str]) -> str:
-    """The text, escaped, with the words it was found by marked."""
+    """The text, escaped, with the words it was found by marked: matched the way the search
+    matched them (core/ask.word_pattern), each whole word marked."""
     out = html.escape(str(text))
     for w in sorted({w for w in words if w}, key=len, reverse=True):
-        out = re.sub(f"({re.escape(html.escape(w))})", rf'<mark class="{theme.FOUND}">\1</mark>',
-                     out, flags=re.IGNORECASE)
+        pattern = ask.word_pattern(html.escape(w))
+        out = re.sub(rf"({pattern}\w*)", rf'<mark class="{theme.FOUND}">\1</mark>', out,
+                     flags=re.IGNORECASE)
     return out
 
 

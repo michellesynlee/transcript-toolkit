@@ -136,12 +136,34 @@ TYPEABLE = ("topic:", "region", "location")
 
 def typed_as_words(question: Question, fields: dict[str, Field]) -> Question:
     """Topics and places matched case-insensitively to their real names; anything else typed
-    into one becomes a search of the transcript text for it."""
+    into one becomes a search of the transcript text for it. Commas separate several things,
+    any of which will do ("community, belonging"); several topic names stay topics."""
+    def split(value: str) -> list[str]:
+        return [w.strip() for w in value.split(",") if w.strip()]
+
+    def words(condition: str, found: list[str], join: str) -> list[Row]:
+        if condition == "not_contains":       # says none of them: one "does not contain" each
+            return [Row("words", "not_contains", (w,), join if i == 0 else "and")
+                    for i, w in enumerate(found)]
+        if len(found) > 1:
+            return [Row("words", "contains_any", tuple(found), join)]
+        return [Row("words", condition, tuple(found), join)]
+
     def convert(r: Row) -> list[Row]:
+        if r.field == "words" and r.condition in ("contains", "not_contains"):
+            return words(r.condition, split(r.values[0]), r.join)
         f = fields.get(r.field)
         if f is None or not r.field.startswith(TYPEABLE):
             return [r]
         names = {v.casefold(): v for v in f.values}
+        if r.condition != "alongside" and len(r.values) == 1 and "," in r.values[0]:
+            parts = split(r.values[0])
+            if all(p.casefold() in names for p in parts) and r.condition in (
+                    "talks_about", "might_talk_about"):
+                return [Row(r.field, "any_of", tuple(names[p.casefold()] for p in parts), r.join)]
+            if r.condition not in WORDS_FOR:
+                raise ToolkitError(f"Not a {f.title} in this collection: {r.values[0]}.")
+            return words(WORDS_FOR[r.condition], parts, r.join)
         known = [names[v.casefold()] for v in r.values if v.casefold() in names]
         typed = [v for v in r.values if v.casefold() not in names]
         if not typed:
@@ -153,7 +175,7 @@ def typed_as_words(question: Question, fields: dict[str, Field]) -> Question:
             return [Row("words", "contains_all", tuple(typed), r.join)]
         if r.condition not in WORDS_FOR or len(r.values) != 1:
             raise ToolkitError(f"Not a {f.title} in this collection: {', '.join(typed)}.")
-        return [Row("words", WORDS_FOR[r.condition], tuple(typed), r.join)]
+        return words(WORDS_FOR[r.condition], typed, r.join)
 
     return replace(question, rows=tuple(x for r in question.rows for x in convert(r)),
                    groups=tuple(x for g in question.groups for x in convert(g)))

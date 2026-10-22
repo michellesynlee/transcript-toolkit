@@ -1,5 +1,12 @@
-# Advanced settings for the Ask page's AI summary (`toolkit ask summarize`). You normally don't
-# touch these. The model and how much it thinks can also be set under `ask:` in config.yaml.
+# Advanced settings for the Ask page. You normally don't touch these. The summary's model and
+# how much it thinks can also be set under `ask:` in config.yaml.
+
+# "Who talks about ...": a topic or place belongs to a whole clip, so a speaker is credited with
+# it only when at least this share of the clip's words are theirs. Stops an interviewer's long
+# question, answered with "yes", counting as the narrator talking about it (and the reverse).
+speaker_min_share: 0.25
+
+# --- the AI summary (`toolkit ask summarize`) ---
 
 model: gpt-5.6-luna
 reasoning: low

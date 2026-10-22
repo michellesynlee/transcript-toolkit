@@ -102,3 +102,20 @@ def test_who_never_mentions_a_typed_word(tagged):
         Question("find", "speakers", (Row("topic:main", "never_mentions", ("kenya",)),)),
         ask.fields(tagged))
     assert list(ask.answer(tagged, q)["speaker"]) == ["Bob"]
+
+
+# --- commas in a typed box --------------------------------------------------------------------
+
+@pytest.mark.parametrize("row,expected", [
+    (Row("topic:main", "talks_about", ("community, belonging",)),
+     (Row("words", "contains_any", ("community", "belonging")),)),
+    (Row("topic:main", "talks_about", ("education, Family",)),
+     (Row("topic:main", "any_of", ("Education", "Family")),)),
+    (Row("topic:main", "never_mentions", ("Kenya, election",)),
+     (Row("words", "not_contains", ("Kenya",)), Row("words", "not_contains", ("election",)))),
+    (Row("words", "contains", ("school, Kenya",)),
+     (Row("words", "contains_any", ("school", "Kenya")),)),
+], ids=["words", "topics", "never", "words-field"])
+def test_commas_mean_any_of_these(tagged, row, expected):
+    q = Question("find", "speakers", (row,))
+    assert ask_quick.typed_as_words(q, ask.fields(tagged)).rows == expected

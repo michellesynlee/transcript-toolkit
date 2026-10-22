@@ -324,3 +324,68 @@ def test_an_interview_narrows_to_its_own_clips(tagged):
         ("speaker", "or"), ("interview", "and")]
     out = ask.answer(tagged, narrowed)
     assert list(out["clip"]) == [f"{A1}_0001", f"{A2}_0001"]
+
+
+# --- who said it ------------------------------------------------------------------------------
+
+BOTH = ("Narrator", "Interviewer")
+
+
+def test_a_speaker_is_credited_only_for_their_own_words(tagged):
+    # Q and Ann share clip a1_1, but only Ann says "teachers"
+    out = _ask(tagged, "find", "speakers", ("words", "contains", ("teachers",)), roles=BOTH)
+    assert list(out["speaker"]) == ["Ann"]
+    both = _ask(tagged, "find", "speakers", ("words", "contains", ("school",)), roles=BOTH)
+    assert sorted(both["speaker"]) == ["Ann", "Q"]
+
+
+def _share(project, share):
+    import re
+    path = project.advanced_dir / "ask.yaml"
+    path.write_text(re.sub(r"speaker_min_share: [0-9.]+", f"speaker_min_share: {share}",
+                           path.read_text()))
+
+
+def test_a_topic_is_a_speakers_only_when_they_say_enough_of_the_clip(tagged):
+    # a1_1 is Education: Q says 4 of its 10 words, Ann 6
+    found = _ask(tagged, "find", "speakers", ("topic:main", "talks_about", ("Education",)),
+                 roles=BOTH)
+    assert sorted(found["speaker"]) == ["Ann", "Q"]
+    _share(tagged, 0.5)
+    found = _ask(tagged, "find", "speakers", ("topic:main", "talks_about", ("Education",)),
+                 roles=BOTH)
+    assert list(found["speaker"]) == ["Ann"]
+    _share(tagged, 0.7)                                  # now only a2_1, which is all Ann's
+    found = _ask(tagged, "find", "speakers", ("topic:main", "talks_about", ("Education",)))
+    assert found[["speaker", "clear"]].to_dict("records") == [{"speaker": "Ann", "clear": 1}]
+
+
+def test_a_project_without_the_setting_gets_it_appended(tagged):
+    path = tagged.advanced_dir / "ask.yaml"
+    path.write_text("# my own notes\nmodel: gpt-5.6-luna\n")
+    assert ask.add_missing_files(tagged) == ["advanced/ask.yaml (new settings)"]
+    text = path.read_text()
+    assert text.startswith("# my own notes\nmodel: gpt-5.6-luna\n")
+    assert "speaker_min_share: 0.25" in text and "an interviewer's long" in text
+    assert text.count("model:") == 1                     # nothing it had is repeated
+    assert ask.add_missing_files(tagged) == []
+
+
+# --- how words match --------------------------------------------------------------------------
+
+def test_words_match_from_their_start(imported):
+    assert _ask(imported, "find", "paragraphs", ("words", "contains", ("oved",))).empty
+    loved = _ask(imported, "find", "paragraphs", ("words", "contains", ("love",)))
+    assert list(loved["text"]) == ["I loved school and my teachers."]
+
+
+@pytest.mark.parametrize("word,text,hit", [
+    ("art", "the party started", False),
+    ("art", "an artist", True),
+    ("community", "two communities", True),
+    ("communit", "the community", True),
+    ("Kenya", "KENYA's coast", True),
+])
+def test_word_pattern(word, text, hit):
+    import re
+    assert bool(re.search(ask.word_pattern(word), text, re.IGNORECASE)) is hit

@@ -19,10 +19,13 @@ the only paths named here are the companion tables written beside those in the s
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass, replace
+from importlib import resources
 from functools import cached_property
 
 import pandas as pd
+import yaml
 
 from ..errors import ToolkitError
 from ..project import Project
@@ -115,6 +118,48 @@ class Question:
     groups: tuple[Row, ...] = ()        # Compare: one column per group
 
 
+# What a project made before Ask existed is missing, copied in on first use. Never overwrites.
+NEW_FILES = (("scaffold/advanced/ask.yaml", "advanced/ask.yaml"),
+             ("prompts/ask_summary.md", "prompts/ask_summary.md"))
+
+
+def add_missing_files(project: Project) -> list[str]:
+    """Copy in the files a project made before Ask lacks, and append to a settings file the
+    settings it lacks (each with its comment), leaving everything already there as it is."""
+    defaults = resources.files("transcript_toolkit") / "defaults"
+    added = []
+    for src, dest in NEW_FILES:
+        path = project.root / dest
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with resources.as_file(defaults / src) as f:
+                shutil.copyfile(f, path)
+            added.append(dest)
+        elif dest.endswith(".yaml"):
+            missing = _missing_settings(path.read_text(), (defaults / src).read_text())
+            if missing:
+                path.write_text(path.read_text().rstrip("\n") + "\n\n" + missing + "\n")
+                added.append(f"{dest} (new settings)")
+    return added
+
+
+def _missing_settings(have_text: str, default_text: str) -> str:
+    """The default file's settings that `have_text` lacks, each with the comment above it."""
+    have = yaml.safe_load(have_text) or {}
+    blocks, comment = [], []
+    for line in default_text.splitlines():
+        key = re.match(r"^([a-z_]+):", line)
+        if key:
+            if key.group(1) not in have:
+                blocks.append("\n".join([*comment, line]))
+            comment = []
+        elif line.startswith("#"):
+            comment.append(line)
+        else:
+            comment = []
+    return "\n\n".join(blocks)
+
+
 # --- the data, read once per question ---------------------------------------------------------
 
 class Collection:
@@ -145,6 +190,11 @@ class Collection:
     def labels(self) -> pd.Series:
         df = pd.read_parquet(self._out(freshness.WRITES["label"][0]))
         return df.set_index("clip_id")["label"]
+
+    @cached_property
+    def speaker_min_share(self) -> float:
+        add_missing_files(self.project)
+        return float(load_step_config(self.project, "ask")["speaker_min_share"])
 
     @cached_property
     def top_score(self) -> int:
@@ -293,9 +343,13 @@ def check(question: Question, available: dict[str, Field]) -> None:
 
 @dataclass
 class _Base:
-    unit: str                       # "paragraph" | "clip"
+    unit: str                       # "paragraph" | "clip" | "pair" (a speaker within a clip)
     ids: pd.Index                   # the units
     paras: pd.DataFrame             # paragraphs by the chosen roles (with clip_id for clips)
+    pairs: pd.DataFrame | None = None   # "pair": clip_id, interview_key, speaker_label, share
+
+
+PAIR = "\t"                        # joins a clip id and a speaker label into a pair's id
 
 
 def _base(data: Collection, q: Question) -> _Base:
@@ -304,12 +358,24 @@ def _base(data: Collection, q: Question) -> _Base:
         paras = data.paragraphs[data.paragraphs["speaker_role"].isin(q.roles)]
         return _Base("paragraph", paras.index, paras)
     paras = data.clipped[data.clipped["speaker_role"].isin(q.roles)]
+    if q.subject == "speakers":
+        # Who said it, not who was in the clip: each speaker in each clip is a unit of its own,
+        # with the share of the clip's words that are theirs.
+        total = data.clipped.groupby("clip_id")["word_count"].sum()
+        pairs = (paras.groupby(["clip_id", "interview_key", "speaker_label"], as_index=False)
+                 ["word_count"].sum())
+        pairs["share"] = pairs["word_count"] / pairs["clip_id"].map(total)
+        pairs.index = pd.Index(pairs["clip_id"] + PAIR + pairs["speaker_label"])
+        paras = paras.assign(_pair=paras["clip_id"] + PAIR + paras["speaker_label"])
+        return _Base("pair", pairs.index, paras, pairs)
     ids = data.clips.index[data.clips.index.isin(paras["clip_id"])]
     return _Base("clip", ids, paras)
 
 
 def _strength(data: Collection, base: _Base, row: Row) -> pd.Series:
     """CLEAR / POSSIBLE / 0 for every unit of the base, for one positive row."""
+    if base.unit == "pair":
+        return _pair_strength(data, base, row)
     if row.field in PARAGRAPH_FIELDS:
         hit = _paragraph_hit(data, base.paras, row)
         if base.unit == "paragraph":
@@ -324,6 +390,19 @@ def _strength(data: Collection, base: _Base, row: Row) -> pd.Series:
     return _place_strength(data.places(row.field).reindex(base.ids), row)
 
 
+def _pair_strength(data: Collection, base: _Base, row: Row) -> pd.Series:
+    """A speaker in a clip. Words count only in their own lines. A topic or place belongs to the
+    whole clip, so it is theirs only when they say a fair share of it (`speaker_min_share`):
+    an interviewer's long question answered with "yes" is not the narrator talking about it."""
+    if row.field in PARAGRAPH_FIELDS:
+        hit = _paragraph_hit(data, base.paras, row).groupby(base.paras["_pair"]).any()
+        return hit.reindex(base.ids, fill_value=False).astype(int) * CLEAR
+    clips = pd.Index(base.pairs["clip_id"].unique())
+    per_clip = _strength(data, _Base("clip", clips, base.paras), row)
+    s = base.pairs["clip_id"].map(per_clip).fillna(0).astype(int)
+    return s.where(base.pairs["share"] >= data.speaker_min_share, 0)
+
+
 def _paragraph_hit(data: Collection, paras: pd.DataFrame, row: Row) -> pd.Series:
     v = row.values[0]
     if row.field == "words":
@@ -336,14 +415,21 @@ def _paragraph_hit(data: Collection, paras: pd.DataFrame, row: Row) -> pd.Series
     return untimed if v == "untimed" else ~untimed
 
 
-def _text_hit(text: pd.Series, row: Row) -> pd.Series:
-    """Case-insensitive; "whole word" will not find "school" inside "schooling"."""
-    def has(v: str) -> pd.Series:
-        if row.condition == "whole_word":
-            return text.str.contains(rf"\b{re.escape(v)}\b", case=False, regex=True)
-        return text.str.contains(v, case=False, regex=False)
+def word_pattern(word: str, whole: bool = False) -> str:
+    """Words are matched from their start, ignoring case: "art" finds "artist" but not "party",
+    "communit" finds "community" and "communities". A word ending in -y also finds its -ies
+    plural ("community" finds "communities"). `whole` matches the word exactly, and only it."""
+    w = word.strip()
+    forms = [re.escape(w)]
+    if not whole and len(w) > 2 and w[-1] in "yY":
+        forms.append(re.escape(w[:-1]) + "ies")
+    return rf"\b(?:{'|'.join(forms)})" + (r"\b" if whole else "")
 
-    hits = [has(v) for v in row.values]
+
+def _text_hit(text: pd.Series, row: Row) -> pd.Series:
+    whole = row.condition == "whole_word"
+    hits = [text.str.contains(word_pattern(v, whole), case=False, regex=True)
+            for v in row.values]
     if row.condition == "contains_all":
         return pd.concat(hits, axis=1).all(axis=1)
     return pd.concat(hits, axis=1).any(axis=1)          # contains, any of, whole word
@@ -381,6 +467,9 @@ def _subject_keys(base: _Base, subject: str) -> pd.DataFrame:
     """unit -> the subject it belongs to: columns `unit` and `key` (one row per pair)."""
     if subject in ("paragraphs", "clips"):
         return pd.DataFrame({"unit": base.ids, "key": base.ids})
+    if base.unit == "pair":
+        return pd.DataFrame({"unit": base.ids, "key": list(zip(base.pairs["interview_key"],
+                                                               base.pairs["speaker_label"]))})
     cols = ["interview_key"] if subject == "interviews" else ["interview_key", "speaker_label"]
     unit = base.paras.index if base.unit == "paragraph" else base.paras["clip_id"]
     keys = [tuple(r) if len(cols) > 1 else r[0] for r in base.paras[cols].itertuples(index=False)]
