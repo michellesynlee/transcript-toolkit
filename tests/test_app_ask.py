@@ -172,7 +172,7 @@ async def test_the_new_tab_view_shows_the_whole_answer(user: User, open_tagged):
     q = Question("find", "clips", (Row("topic:main", "might_talk_about", ("Education",)),))
     await user.open(view_href(q))
     await user.should_see("Find clips where topic might be Education (narrators)")
-    await user.should_see("3 found · 2 clear, 1 possible")
+    await user.should_see("3 clips across 2 interviews; 2 clearly about it, 1 possibly.")
     await user.should_see("Education mattered to my family.")   # the whole text, in a card
     await user.should_see("possible match")
     user.find(marker="ask-card-0").trigger("click")
@@ -223,7 +223,7 @@ async def test_and_in_the_new_tab(user: User, open_tagged):
 async def test_a_topic_answer_marks_nothing(user: User, open_tagged):
     q = Question("find", "clips", (Row("topic:main", "talks_about", ("Education",)),))
     await user.open(view_href(q))
-    await user.should_see("2 found")
+    await user.should_see("2 clips across 1 interview.")
     assert all("<mark" not in e.content for e in user.find(marker="ask-card-text-0").elements)
 
 
@@ -256,12 +256,23 @@ async def test_the_summary_button_says_what_it_costs_and_runs_the_real_command(
 
 
 @pytest.mark.asyncio
-async def test_a_count_has_no_summary(user: User, open_tagged):
+async def test_a_count_has_a_sentence_and_a_summary_too(user: User, open_tagged):
     await user.open("/ask")
     await choose(user, "ask-quick", "How often does ___ come up?")
     await choose(user, "ask-blank-0", "Education")
     user.find(marker="ask").click()
     await user.should_see("How often does Education come up?")
+    await user.should_see("3 clips across 2 interviews; most in alpha (2).")
+    await user.should_see(marker="ask-summary")
+
+
+@pytest.mark.asyncio
+async def test_never_mentions_has_a_sentence_but_nothing_to_summarize(user: User, open_tagged):
+    await user.open("/ask")
+    await choose(user, "ask-quick", "Who never mentions…")
+    await choose(user, "ask-blank-0", "Work")
+    user.find(marker="ask").click()
+    await user.should_see("1 speaker in 1 interview matches.")
     await user.should_not_see(marker="ask-summary")
 
 

@@ -563,6 +563,16 @@ def passage(project: Project, result: dict) -> Passage:
     return Passage(session, first, last, transcript.reset_index(drop=True))
 
 
+def and_each(rows: tuple[Row, ...], extra: tuple[Row, ...]) -> tuple[Row, ...]:
+    """`extra` and-ed onto every or-group of `rows`: (A or B) and X is (A and X) or (B and X)."""
+    out: list[Row] = []
+    for group in or_groups(rows):
+        joined = [*group, *extra]
+        out += [replace(r, join=("or" if out else "and") if i == 0 else "and")
+                for i, r in enumerate(joined)]
+    return tuple(out)
+
+
 def narrow(project: Project, question: Question, result: dict) -> Question:
     """An interview or speaker in an answer, opened up: the same question asked of its clips
     (its paragraphs, before clipping). "Mostly talks about" is about the whole interview, so it
@@ -570,14 +580,13 @@ def narrow(project: Project, question: Question, result: dict) -> Question:
     pin = [Row("interview", "is", (result["interview"],))]
     if "speaker" in result:
         pin.append(Row("speaker", "is", (result["speaker"],)))
-    rows: list[Row] = []
+    kept: list[Row] = []
     for group in or_groups(question.rows):
-        kept = [r for r in group if r.condition != "mostly_talks_about"]
-        joined = [*kept, *pin]
-        rows += [replace(r, join=("or" if rows else "and") if i == 0 else "and")
-                 for i, r in enumerate(joined)]
+        group = [r for r in group if r.condition != "mostly_talks_about"]
+        kept += [replace(r, join="or" if i == 0 and kept else "and") for i, r in enumerate(group)]
+    rows = and_each(tuple(kept), tuple(pin)) if kept else tuple(pin)
     clipped = freshness.wrote_its_results(project, "clip")
-    return Question("find", "clips" if clipped else "paragraphs", tuple(rows), question.roles)
+    return Question("find", "clips" if clipped else "paragraphs", rows, question.roles)
 
 
 # --- the sentence -----------------------------------------------------------------------------

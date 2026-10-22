@@ -4,6 +4,8 @@ You are given the question, as the curator asked it, and the passages the toolki
 
 Write ONE sentence (two at the very most) that tells the curator what these passages, taken together, say in answer to the question. For example: what the narrator feels or thinks about the subject, how strongly, and whether it changes across the passages.
 
+When the passages come from several people, say what they have in common and where they differ, naming a person only where that helps. When the passages come in groups to compare, say how the groups differ.
+
 Rules:
 - Use only what the passages say. Do not add background, context or interpretation the passages do not support.
 - If the passages only touch on the subject, or say little about it, say so plainly ("mentions it only in passing", "does not say much about it") rather than stretching them into a view.

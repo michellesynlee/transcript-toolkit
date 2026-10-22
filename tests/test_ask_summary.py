@@ -3,9 +3,9 @@ import json
 
 import pandas as pd
 import pytest
-from test_ask import imported, tagged  # noqa: F401  (fixtures)
+from test_ask import A2, imported, tagged  # noqa: F401  (fixtures)
 
-from transcript_toolkit.core import ask_quick, ask_summary, cost
+from transcript_toolkit.core import ask, ask_quick, ask_summary, cost
 from transcript_toolkit.core.ask import Question, Row
 from transcript_toolkit.errors import ToolkitError
 from transcript_toolkit.steps import ask_summary as step
@@ -41,14 +41,60 @@ def test_the_passages_go_clearest_first_and_say_when_some_were_left_out():
     assert "[c1 · a]\none" in m.user_content and "three" not in m.user_content
 
 
-def test_nothing_to_summarize_is_said_without_a_call():
-    empty = pd.DataFrame({"text": [], "match": []})
-    assert ask_summary.without_ai(empty) == "Nothing in the transcripts matches this."
-    weak = pd.DataFrame({"text": ["a", "b"], "match": ["possible", "possible"]})
-    assert ask_summary.without_ai(weak).startswith("No passage is clearly about this; 2 may")
-    assert not ask_summary.summarisable(weak)
-    clear = pd.DataFrame({"text": ["a"], "match": ["clear"]})
-    assert ask_summary.without_ai(clear) is None and ask_summary.summarisable(clear)
+@pytest.mark.parametrize("q,expected", [
+    (Question("find", "clips", (Row("topic:main", "might_talk_about", ("Education",)),)),
+     "3 clips across 2 interviews; 2 clearly about it, 1 possibly."),
+    (Question("find", "clips", (Row("words", "contains", ("zebra",)),)),
+     "Nothing in the transcripts matches this."),
+    (Question("find", "paragraphs", (Row("words", "contains", ("family",)),)),
+     "2 passages across 2 interviews."),
+    (Question("find", "interviews", (Row("topic:main", "talks_about", ("Education",)),)),
+     "Only alpha matches (2 passages)."),
+    (Question("find", "speakers", (Row("topic:main", "might_talk_about", ("Family",)),)),
+     "2 speakers in 2 interviews match; Ann (alpha) has the most (1 passage)."),
+    (Question("find", "speakers", (Row("topic:main", "never_mentions", ("Work",)),)),
+     "1 speaker in 1 interview matches."),
+    (Question("count", "clips", (Row("topic:main", "might_talk_about", ("Education",)),)),
+     "3 clips across 2 interviews; most in alpha (2)."),
+    (Question("compare", "clips", groups=(Row("topic:main", "talks_about", ("Education",)),
+                                          Row("topic:main", "talks_about", ("Family",)))),
+     "topic is Education: 2 clips in 1 interview; topic is Family: 2 clips in 2 interviews."),
+], ids=["clips", "nothing", "words", "one-interview", "speakers", "negative", "count", "compare"])
+def test_every_answer_has_a_free_sentence(tagged, q, expected):
+    assert ask_summary.at_a_glance(q, ask.answer(tagged, q)) == expected
+
+
+def test_only_possible_matches_say_so_and_can_still_be_summarized(tagged):
+    q = Question("find", "clips", (Row("topic:main", "might_talk_about", ("Work",)),
+                                   Row("speaker", "is", ("Ann",)),
+                                   Row("interview", "is", ("alpha",))))
+    weak = ask.answer(tagged, q)[lambda d: d["match"] == "possible"]
+    assert ask_summary.at_a_glance(q, weak) == "No clip is clearly about this; 1 may touch on it."
+    assert ask_summary.has_positive(q)
+
+
+def test_interviews_are_summarized_from_their_matching_passages(tagged):
+    q = Question("find", "interviews", (Row("topic:main", "mostly_talks_about", ("Work",)),))
+    found = ask_summary.passages(tagged, q, ask.answer(tagged, q))
+    assert list(found["clip"]) == [f"{A2}_0001"]           # alpha's Work clip, not all of alpha
+
+
+def test_compare_sends_each_group_under_its_name(tagged):
+    q = Question("compare", "clips", groups=(Row("topic:main", "talks_about", ("Education",)),
+                                             Row("topic:main", "talks_about", ("Family",))))
+    p = ask_summary.prepare(tagged, q, "Education vs Family")
+    assert "The passages come in 2 groups to compare." in p.material.user_content
+    assert "Group: topic is Education" in p.material.user_content
+    assert "Group: topic is Family" in p.material.user_content
+    assert p.material.n_read == 4
+
+
+def test_a_question_only_about_absence_is_not_summarized(tagged, fake_model):
+    q = Question("find", "speakers", (Row("topic:main", "never_mentions", ("Work",)),))
+    assert not ask_summary.has_positive(q)
+    with pytest.raises(ToolkitError, match="only asks what is not there"):
+        step.run_ask_summary(tagged, json.dumps(ask_quick.question_to(q)), yes=True)
+    assert fake_model == []
 
 
 def test_the_estimate_is_the_prompt_and_passages_plus_the_expected_answer(tagged):

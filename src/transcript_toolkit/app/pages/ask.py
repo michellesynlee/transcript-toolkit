@@ -432,7 +432,7 @@ class _Results:
                     .props("flat dense no-caps").mark("ask-back")
             ui.label(title).classes("text-lg font-medium")
             with ui.row().classes("items-center gap-2"):
-                ui.label(counts(df)).classes("text-sm opacity-70")
+                ui.label(ask_summary.at_a_glance(q, df)).classes("text-sm").mark("ask-glance")
                 if "match" in df.columns and (df["match"] == "possible").any():
                     info(MATCH_HELP)
             self._summary(q, df, title)
@@ -442,9 +442,7 @@ class _Results:
                               on_click=lambda: ui.navigate.to(view_href(q, title), new_tab=True)) \
                         .props("flat dense no-caps")
                 export_button(df)
-            if df.empty:
-                if ask_summary.without_ai(df) is None:      # else it has already said so
-                    ui.label("Nothing matches.").classes("text-sm")
+            if df.empty:                                # the sentence above has said so
                 return
             if q.verb != "compare":
                 ui.label("Click a row to read it in its transcript."
@@ -468,19 +466,17 @@ class _Results:
                          f"see them all.").classes("text-xs opacity-60")
 
     def _summary(self, q: ask.Question, df: pd.DataFrame, title: str) -> None:
-        """A sentence on what the passages say: from the counts when there is nothing to read,
-        the saved summary when this was asked before, else the button that pays for one."""
-        plain = ask_summary.without_ai(df)
-        if plain:
-            ui.label(plain).classes("text-sm italic").mark("ask-plain")
-            return
-        if q.verb != "find" or not ask_summary.summarisable(df):
+        """What the passages behind the answer say: the saved summary when this was asked
+        before, else the button that pays for one. Nothing when there is nothing to read."""
+        if df.empty or not ask_summary.has_positive(q):
             return
         try:
             ask_summary.add_missing_files(self.project)
             prepared = ask_summary.prepare(self.project, q, title, answer=df)
         except ToolkitError as e:
             ui.label(f"No AI summary: {e}").classes("text-xs opacity-60")
+            return
+        if prepared.material.n_read == 0:
             return
         said = ask_summary.saved(self.project, prepared)
         if said:
@@ -560,14 +556,6 @@ def found_words(q: ask.Question) -> dict[str, list[str]]:
         if r.field in column and r.condition in FOUND_BY_WORDS:
             found.setdefault(column[r.field], []).extend(r.values)
     return found
-
-
-def counts(df: pd.DataFrame) -> str:
-    if "match" not in df.columns:
-        return f"{len(df)} interviews"
-    clear = int((df["match"] == "clear").sum())
-    possible = len(df) - clear
-    return f"{len(df)} found" + (f" · {clear} clear, {possible} possible" if possible else "")
 
 
 def results_table(df: pd.DataFrame, clip_text: int | None = None,

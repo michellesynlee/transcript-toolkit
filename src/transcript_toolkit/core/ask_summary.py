@@ -7,18 +7,18 @@ the same passages again is free and `toolkit cost` counts it. This module is the
 and the command share — what is sent, what it is estimated to cost, whether it is already
 paid for — so the figure on the button is the figure the command asks about.
 
-When there is nothing to summarize (no matches, or only possible ones) the page says so from
-the counts, with no call at all: `without_ai`.
+Every answer also gets a sentence from its counts alone, free and always there: `at_a_glance`.
 """
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 
 import pandas as pd
 
 from ..project import Project
+from ..steps import freshness
 from . import ask
 from . import cost as costmod
 from .cache import cache_key, latest_records
@@ -67,37 +67,110 @@ class Material:
     user_content: str
 
 
-def material(answer: pd.DataFrame, title: str, max_clips: int) -> Material:
-    """The question and the answer's passages, clearest first, as the model reads them."""
-    kept = answer.head(max_clips)           # an answer is already ranked clearest first
-    blocks = []
-    for r in kept.fillna("").astype(str).to_dict("records"):
-        head = " · ".join(v for v in (r.get("clip") or r.get("session"), r.get("interview"),
-                                      r.get("speaker"), r.get("label")) if v)
-        blocks.append(f"[{head}]\n{r['text']}")
-    more = (f"There are {len(answer)} passages; you are given the clearest {len(kept)}.\n\n"
-            if len(answer) > len(kept) else "")
-    content = f"Question: {title}\n\n{more}Passages:\n\n" + "\n\n".join(blocks)
-    return Material(len(answer), len(kept), content)
+PASSAGE_SUBJECTS = ("clips", "paragraphs")
 
 
-def summarisable(answer: pd.DataFrame) -> bool:
-    """Passages with text to read, at least one of them a clear match."""
-    return ("text" in answer.columns and not answer.empty
-            and ("match" not in answer.columns or (answer["match"] == "clear").any()))
+def has_positive(q: ask.Question) -> bool:
+    """Whether the question looks for something present. "Who never mentions X" alone does
+    not: its passages are everything else those people said, and a summary of that would be
+    an answer to a different question."""
+    return any(not ask.CONDITIONS[r.condition].negative for r in (*q.rows, *q.groups))
 
 
-def without_ai(answer: pd.DataFrame) -> str | None:
-    """The sentence the counts can give on their own, when there is nothing for a summary."""
-    if "text" not in answer.columns:
-        return None
+def passages(project: Project, q: ask.Question, answer: pd.DataFrame) -> pd.DataFrame:
+    """The passages behind an answer, clearest first. For interviews and speakers, the matching
+    passages from those found; for Compare, each group's, labelled in a `group` column. An
+    interview "mostly about" something is read through its passages that are about it."""
+    if q.verb == "find" and q.subject in PASSAGE_SUBJECTS:
+        return answer
+    unit = q.subject if q.subject in PASSAGE_SUBJECTS else (
+        "clips" if freshness.wrote_its_results(project, "clip") else "paragraphs")
+    rows = tuple(replace(r, condition="talks_about") if r.condition == "mostly_talks_about"
+                 else r for r in q.rows)
+    if q.verb == "compare":
+        frames = [ask.answer(project, ask.Question("find", unit, ask.and_each(rows, (g,)),
+                                                   q.roles)).assign(group=ask.row_words(g))
+                  for g in q.groups]
+        return pd.concat(frames, ignore_index=True)
+    found = ask.answer(project, ask.Question("find", unit, rows, q.roles))
+    if q.verb == "find":                      # interviews or speakers: only theirs
+        found = found[found["interview"].isin(answer["interview"])]
+    return found.reset_index(drop=True)
+
+
+def material(found: pd.DataFrame, title: str, max_clips: int) -> Material:
+    """The question and its passages, clearest first, as the model reads them. Compare's groups
+    share the allowance and are sent group by group."""
+    def blocks(frame: pd.DataFrame) -> str:
+        out = []
+        for r in frame.fillna("").astype(str).to_dict("records"):
+            head = " · ".join(v for v in (r.get("clip") or r.get("session"), r.get("interview"),
+                                          r.get("speaker"), r.get("label")) if v)
+            out.append(f"[{head}]\n{r['text']}")
+        return "\n\n".join(out)
+
+    def more(frame: pd.DataFrame, kept: pd.DataFrame) -> str:
+        return (f"There are {len(frame)} passages; you are given the clearest {len(kept)}."
+                if len(frame) > len(kept) else "")
+
+    if "group" in found.columns:
+        groups = list(dict.fromkeys(found["group"]))
+        per = max(1, max_clips // len(groups))
+        parts, n_read = [], 0
+        for g in groups:
+            frame = found[found["group"] == g]
+            kept = frame.head(per)
+            n_read += len(kept)
+            note = more(frame, kept)
+            parts.append(f"Group: {g}\n" + (f"{note}\n" if note else "") + f"\n{blocks(kept)}")
+        content = (f"Question: {title}\n\nThe passages come in {len(groups)} groups to compare."
+                   f"\n\n" + "\n\n".join(parts))
+        return Material(len(found), n_read, content)
+    kept = found.head(max_clips)
+    note = more(found, kept)
+    content = (f"Question: {title}\n\n" + (f"{note}\n\n" if note else "")
+               + "Passages:\n\n" + blocks(kept))
+    return Material(len(found), len(kept), content)
+
+
+def _n(count: int, word: str) -> str:
+    return f"{count} {word if count == 1 else word + 's'}"
+
+
+def at_a_glance(q: ask.Question, answer: pd.DataFrame) -> str:
+    """One sentence on an answer, from its counts alone: free, and always there."""
+    unit = {"clips": "clip", "paragraphs": "passage"}.get(q.subject, "passage")
     if answer.empty:
         return "Nothing in the transcripts matches this."
-    if "match" in answer.columns and not (answer["match"] == "clear").any():
-        n = len(answer)
-        return (f"No passage is clearly about this; {n} may touch on it. "
-                f"Read {'it' if n == 1 else 'them'} below.")
-    return None
+    if q.verb == "compare":
+        groups = [c for c in answer.columns if c != "interview"]
+        return "; ".join(f"{g}: {_n(int(answer[g].sum()), unit)} in "
+                         f"{_n(int((answer[g] > 0).sum()), 'interview')}" for g in groups) + "."
+    if q.verb == "count":
+        total = answer["clear"] + answer["possible"]
+        top = answer.iloc[0]
+        return (f"{_n(int(total.sum()), unit)} across {_n(int((total > 0).sum()), 'interview')}"
+                + (f"; most in {top['interview']} ({int(total.iloc[0])})." if len(answer) > 1
+                   else "."))
+    if q.subject in PASSAGE_SUBJECTS:
+        n, clear = len(answer), int((answer.get("match") == "clear").sum())
+        if "match" in answer.columns and clear == 0:
+            return f"No {unit} is clearly about this; {n} may touch on it."
+        possible = n - clear if "match" in answer.columns else 0
+        return (f"{_n(n, unit)} across {_n(answer['interview'].nunique(), 'interview')}"
+                + (f"; {clear} clearly about it, {possible} possibly." if possible else "."))
+    # interviews or speakers
+    n = len(answer)
+    who = (_n(n, "interview") if q.subject == "interviews" else
+           f"{_n(n, 'speaker')} in {_n(answer['interview'].nunique(), 'interview')}")
+    if not has_positive(q):
+        return f"{who} {'matches' if n == 1 else 'match'}."
+    top = answer.iloc[0]
+    most = int(top["clear"] + top["possible"])
+    name = top["interview"] if q.subject == "interviews" else f"{top['speaker']} ({top['interview']})"
+    if n == 1:
+        return f"Only {name} matches ({_n(most, 'passage')})."
+    return f"{who} match; {name} has the most ({_n(most, 'passage')})."
 
 
 @dataclass(frozen=True)
@@ -115,7 +188,7 @@ def prepare(project: Project, question: ask.Question, title: str,
     cfg = settings(project)
     instructions = load_prompt(project, cfg["prompt"])
     answer = ask.answer(project, question) if answer is None else answer
-    m = material(answer, title, int(cfg["max_clips"]))
+    m = material(passages(project, question, answer), title, int(cfg["max_clips"]))
     key = cache_key(cfg["model"], cfg["reasoning"], cfg["verbosity"], instructions, m.user_content)
     return Prepared(cfg, instructions, m, key)
 

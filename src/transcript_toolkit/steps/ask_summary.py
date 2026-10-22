@@ -30,6 +30,8 @@ def run_ask_summary(project: Project, question_json: str, title: str | None = No
         question = ask_quick.question_from(json.loads(question_json))
     except (ValueError, KeyError) as e:
         raise ToolkitError(f"Not a question the Ask page wrote: {e}") from e
+    if not ask_summary.has_positive(question):
+        raise ToolkitError("Nothing to summarize: the question only asks what is not there.")
     title = title or ask.readback(question, ask.fields(project))
     prepared = ask_summary.prepare(project, question, title)
     m, cfg = prepared.material, prepared.cfg
