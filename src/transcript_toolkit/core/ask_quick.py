@@ -126,6 +126,39 @@ def fill(question: Question, values: list[str]) -> Question:
     return out
 
 
+# A word typed where a topic or a place was expected is looked for in the transcripts instead,
+# with the condition that asks the same thing of words.
+WORDS_FOR = {"talks_about": "contains", "might_talk_about": "contains",
+             "only_talks_about": "contains", "mostly_talks_about": "contains",
+             "never_mentions": "not_contains"}
+TYPEABLE = ("topic:", "region", "location")
+
+
+def typed_as_words(question: Question, fields: dict[str, Field]) -> Question:
+    """Topics and places matched case-insensitively to their real names; anything else typed
+    into one becomes a search of the transcript text for it."""
+    def convert(r: Row) -> list[Row]:
+        f = fields.get(r.field)
+        if f is None or not r.field.startswith(TYPEABLE):
+            return [r]
+        names = {v.casefold(): v for v in f.values}
+        known = [names[v.casefold()] for v in r.values if v.casefold() in names]
+        typed = [v for v in r.values if v.casefold() not in names]
+        if not typed:
+            return [replace(r, values=tuple(known))]
+        if r.condition == "alongside":
+            if known:
+                return [replace(r, condition="talks_about", values=tuple(known)),
+                        Row("words", "contains", tuple(typed))]
+            return [Row("words", "contains_all", tuple(typed), r.join)]
+        if r.condition not in WORDS_FOR or len(r.values) != 1:
+            raise ToolkitError(f"Not a {f.title} in this collection: {', '.join(typed)}.")
+        return [Row("words", WORDS_FOR[r.condition], tuple(typed), r.join)]
+
+    return replace(question, rows=tuple(x for r in question.rows for x in convert(r)),
+                   groups=tuple(x for g in question.groups for x in convert(g)))
+
+
 def blanks(question: Question) -> int:
     return sum(r.values.count(BLANK) for r in (*question.rows, *question.groups))
 

@@ -123,23 +123,41 @@ class _Asker:
         blank_fields = [r.field for r in (*q.rows, *q.groups)
                         for v in r.values if v == ask_quick.BLANK]
         parts = self.quick.asks.split("{}")
+        typeable = any(k.startswith(ask_quick.TYPEABLE) for k in blank_fields)
         with ui.row().classes("items-center gap-2 flex-wrap text-lg"):
             for i, part in enumerate(parts):
                 if part.strip():
                     ui.label(part.strip())
                 if i < len(blank_fields):
-                    f = self.fields[blank_fields[i]]
-
-                    def fill(e, k=i) -> None:
-                        self.blanks[k] = e.value or ""
-                    if f.values:
-                        box = ui.select(list(f.values), value=self.blanks[i] or None,
-                                        with_input=True, on_change=fill)
-                    else:
-                        box = ui.input(placeholder=f.title, value=self.blanks[i], on_change=fill)
-                    box.props("dense outlined").classes("min-w-40").mark(f"ask-blank-{i}")
+                    self._blank(i, blank_fields[i])
             ui.button("Ask", icon="search", on_click=self.ask_quick) \
                 .props("color=primary").mark("ask")
+        if typeable:
+            ui.label("Pick from the list, or type any word to search the transcripts for it.") \
+                .classes("text-xs opacity-60")
+
+    def _blank(self, i: int, key: str) -> None:
+        f = self.fields[key]
+
+        def fill(e) -> None:
+            self.blanks[i] = e.value or ""
+
+        if not f.values:
+            box = ui.input(placeholder=f.title, value=self.blanks[i], on_change=fill)
+        elif key.startswith(ask_quick.TYPEABLE):
+            # Typing is enough: what is in the box when Ask is clicked counts, Enter or not.
+            # Picking from the list clears the typed text afterwards, so empty text is ignored.
+            def typing(e) -> None:
+                if e.args:
+                    self.blanks[i] = e.args
+
+            box = ui.select(list(f.values), value=self.blanks[i] or None, with_input=True,
+                            new_value_mode="add-unique", on_change=fill)
+            box.on("input-value", typing)
+        else:
+            box = ui.select(list(f.values), value=self.blanks[i] or None, with_input=True,
+                            on_change=fill)
+        box.props("dense outlined").classes("min-w-40").mark(f"ask-blank-{i}")
 
     def _saved(self) -> None:
         kept = ask_quick.saved(self.project)
@@ -159,7 +177,27 @@ class _Asker:
         if any(not v.strip() for v in self.blanks):
             guard(ToolkitError("Fill in every blank first."))
             return
-        self.results.ask(ask_quick.fill(ask_quick.resolve(self.quick, self.fields), self.blanks))
+        try:
+            filled = ask_quick.fill(ask_quick.resolve(self.quick, self.fields), self.blanks)
+            q = ask_quick.typed_as_words(filled, self.fields)
+        except ToolkitError as e:
+            guard(e)
+            return
+        self.results.ask(q, title=self.quick.asks.format(*self.shown_blanks()))
+
+    def shown_blanks(self) -> list[str]:
+        """The blanks as the question should read: a topic by its own name, a word typed in its
+        place in quotes, so the two cannot be mistaken for each other."""
+        q = ask_quick.resolve(self.quick, self.fields)
+        keys = [r.field for r in (*q.rows, *q.groups) for v in r.values if v == ask_quick.BLANK]
+        shown = []
+        for key, v in zip(keys, self.blanks):
+            names = {n.casefold(): n for n in self.fields[key].values}
+            if key.startswith(ask_quick.TYPEABLE):
+                shown.append(names.get(v.casefold(), f"“{v}”"))
+            else:
+                shown.append(names.get(v.casefold(), v))
+        return shown
 
     def forget(self, button: str) -> None:
         ask_quick.forget(self.project, button)
@@ -357,14 +395,16 @@ class _Results:
         self.project = project
         self.fields = fields
         self.preview = preview          # the page shows the first rows; the view shows them all
-        self.trail: list[tuple[ask.Question, pd.DataFrame]] = []
+        self.trail: list[tuple[ask.Question, pd.DataFrame, str]] = []
 
     def draw(self) -> None:
         self.dialog = ui.dialog()
         self.body = ui.refreshable(self._body)
         self.body()
 
-    def ask(self, q: ask.Question, keep_trail: bool = False) -> None:
+    def ask(self, q: ask.Question, keep_trail: bool = False, title: str = "") -> None:
+        """`title`: how the question reads, when it is a quick question the user typed into
+        (its words no longer match the quick question it came from)."""
         try:
             df = ask.answer(self.project, q)
         except ToolkitError as e:
@@ -372,7 +412,10 @@ class _Results:
             return
         if not keep_trail:
             self.trail = []
-        self.trail.append((q, df))
+        if not title:
+            quicks = [*ask_quick.builtin(), *ask_quick.saved(self.project)]
+            title = ask_quick.wording(q, quicks, self.fields)
+        self.trail.append((q, df, title))
         self.body.refresh()
 
     def back(self) -> None:
@@ -382,13 +425,12 @@ class _Results:
     def _body(self) -> None:
         if not self.trail:
             return
-        q, df = self.trail[-1]
-        quicks = [*ask_quick.builtin(), *ask_quick.saved(self.project)]
+        q, df, title = self.trail[-1]
         with ui.card().classes("w-full gap-2"):
             if len(self.trail) > 1:
                 ui.button("Back", icon="arrow_back", on_click=self.back) \
                     .props("flat dense no-caps").mark("ask-back")
-            ui.label(ask_quick.wording(q, quicks, self.fields)).classes("text-lg font-medium")
+            ui.label(title).classes("text-lg font-medium")
             with ui.row().classes("items-center gap-2"):
                 ui.label(counts(df)).classes("text-sm opacity-70")
                 if "match" in df.columns and (df["match"] == "possible").any():
@@ -396,7 +438,7 @@ class _Results:
             with ui.row().classes("gap-2"):
                 if self.preview:
                     ui.button("Open in new tab", icon="open_in_new",
-                              on_click=lambda: ui.navigate.to(view_href(q), new_tab=True)) \
+                              on_click=lambda: ui.navigate.to(view_href(q, title), new_tab=True)) \
                         .props("flat dense no-caps")
                 export_button(df)
             if df.empty:
@@ -524,11 +566,12 @@ def download(df: pd.DataFrame) -> None:
     ui.download.content(buf.getvalue(), "ask_answer.xlsx")
 
 
-def view_href(question: ask.Question) -> str:
-    return f"{VIEW}?q={quote(json.dumps(ask_quick.question_to(question)))}"
+def view_href(question: ask.Question, title: str = "") -> str:
+    href = f"{VIEW}?q={quote(json.dumps(ask_quick.question_to(question)))}"
+    return href + (f"&title={quote(title)}" if title else "")
 
 
-def view_page(q: str = "") -> None:
+def view_page(q: str = "", title: str = "") -> None:
     """One answer, all of it, on a page of its own — still clickable."""
     with shell(HREF):
         if CONTEXT.project is None:
@@ -542,7 +585,7 @@ def view_page(q: str = "") -> None:
             return
         results = _Results(project, fields, preview=False)
         results.draw()
-        results.ask(question)
+        results.ask(question, title=title)
 
 
 def register() -> None:

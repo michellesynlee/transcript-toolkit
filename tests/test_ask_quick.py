@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from test_ask import imported, tagged  # noqa: F401  (fixtures)
+from test_ask import A2, imported, tagged  # noqa: F401  (fixtures)
 
 from transcript_toolkit.core import ask, ask_quick
 from transcript_toolkit.core.ask import Question, Row
@@ -68,3 +68,37 @@ def test_a_question_with_blanks_cannot_be_saved(tagged):
     q = Question("find", "clips", (Row("topic:main", "talks_about", ("_",)),))
     with pytest.raises(ToolkitError, match="every blank"):
         ask_quick.save(tagged, q, ask.fields(tagged))
+
+
+# --- typing where a topic was expected --------------------------------------------------------
+
+def test_a_typed_topic_name_is_the_topic_whatever_its_case(tagged):
+    fields = ask.fields(tagged)
+    q = Question("find", "speakers", (Row("topic:main", "talks_about", ("education",)),))
+    assert ask_quick.typed_as_words(q, fields).rows == (
+        Row("topic:main", "talks_about", ("Education",)),)
+
+
+@pytest.mark.parametrize("condition,words", [("talks_about", "contains"),
+                                             ("never_mentions", "not_contains"),
+                                             ("mostly_talks_about", "contains")])
+def test_anything_else_typed_searches_the_words(tagged, condition, words):
+    q = Question("find", "speakers", (Row("topic:main", condition, ("Election",)),))
+    assert ask_quick.typed_as_words(q, ask.fields(tagged)).rows == (
+        Row("words", words, ("Election",)),)
+
+
+def test_alongside_keeps_the_topic_and_searches_the_word(tagged):
+    fields = ask.fields(tagged)
+    q = Question("find", "clips", (Row("topic:main", "alongside", ("Work", "election")),))
+    typed = ask_quick.typed_as_words(q, fields)
+    assert typed.rows == (Row("topic:main", "talks_about", ("Work",)),
+                          Row("words", "contains", ("election",)))
+    assert list(ask.answer(tagged, typed)["clip"]) == [f"{A2}_0001"]
+
+
+def test_who_never_mentions_a_typed_word(tagged):
+    q = ask_quick.typed_as_words(
+        Question("find", "speakers", (Row("topic:main", "never_mentions", ("kenya",)),)),
+        ask.fields(tagged))
+    assert list(ask.answer(tagged, q)["speaker"]) == ["Bob"]

@@ -172,3 +172,24 @@ async def test_the_new_tab_view_shows_the_whole_answer(user: User, open_tagged):
     user.find(marker="ask-card-0").trigger("click")
     await asyncio.sleep(0.2)
     await user.should_see(marker="ask-passage")
+
+
+@pytest.mark.asyncio
+async def test_typing_a_word_into_a_topic_blank_searches_for_it(user: User, open_tagged):
+    await user.open("/ask")
+    await choose(user, "ask-quick", "Who talks about…")
+    await user.should_see("type any word to search the transcripts")
+    user.find(marker="ask-blank-0").trigger("inputValue", "ELECTION")
+    user.find(marker="ask").click()
+    await user.should_see("Who talks about “ELECTION”?")
+    assert "Ann" in table_text(user) and "Bob" not in table_text(user)
+
+
+@pytest.mark.asyncio
+async def test_typing_a_topic_name_in_any_case_picks_the_topic(user: User, open_tagged):
+    await user.open("/ask")
+    await choose(user, "ask-quick", "Who talks about…")
+    user.find(marker="ask-blank-0").trigger("inputValue", "family")
+    user.find(marker="ask").click()
+    await user.should_see("Who talks about Family?")
+    assert "Bob" in table_text(user)
