@@ -123,7 +123,7 @@ def test_health_identifies_this_app_and_version(server):
     assert data == {"app": "transcript-toolkit", "version": __version__, "port": server}
 
 
-@pytest.mark.parametrize("path", ["/", "/workspace", "/export", "/settings",
+@pytest.mark.parametrize("path", ["/", "/workspace", "/export", "/ask", "/settings",
                                   *[f"/step/{s.slug}" for s in content.STEPS]])
 def test_every_page_renders(server, path):
     status, body = get(server, path)

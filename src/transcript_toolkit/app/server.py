@@ -244,9 +244,9 @@ def build(allowed_hosts: list[str] | None = None) -> None:
     through an in-process transport rather than a socket, which is why the host allow-list is
     a parameter; the real one is checked against a real server in tests/test_app_pages.py.
     """
-    from .pages import export, home, settings, step, workspace
+    from .pages import ask, export, home, settings, step, workspace
 
-    for page in (home, workspace, step, export, settings):
+    for page in (home, workspace, step, export, ask, settings):
         page.register()
     _register_routes(allowed_hosts or LOCAL_HOSTS)
 

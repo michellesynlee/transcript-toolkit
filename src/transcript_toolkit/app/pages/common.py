@@ -17,7 +17,8 @@ from ..context import CONTEXT
 # gear, not in the row of places you go in order.
 NAV = [("/workspace", "Workspace"),
        *[(f"/step/{s.slug}", s.title) for s in content.STEPS],
-       ("/export", "Export")]
+       ("/export", "Export"),
+       ("/ask", "Ask")]
 
 STATE_LOOK = {
     jobs.RUNNING: ("play_circle", "text-primary", "running"),
