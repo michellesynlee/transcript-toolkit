@@ -1,0 +1,66 @@
+# The Ask page's quick questions: buttons that fill the builder in and leave blanks to pick.
+#
+# Each one is an ordinary Ask question (see core/ask.py for the vocabulary) in which a value
+# may be `_`, a blank the user fills. `field: topic` means whichever topic list the project
+# has (the first, when it has several; the builder can switch it). `asks` is how the finished
+# question reads above its answer, one `{}` per blank in order.
+#
+# Adding a question here needs no code. tests/test_ask_quick.py checks every one is a question
+# the engine can answer.
+
+- button: Who talks about…
+  asks: Who talks about {}?
+  verb: find
+  subject: speakers
+  rows:
+    - {field: topic, condition: talks_about, values: [_]}
+
+- button: Who never mentions…
+  asks: Who never mentions {}?
+  verb: find
+  subject: speakers
+  rows:
+    - {field: topic, condition: never_mentions, values: [_]}
+
+- button: Who mostly talks about…
+  asks: Which interviews are mostly about {}?
+  verb: find
+  subject: interviews
+  rows:
+    - {field: topic, condition: mostly_talks_about, values: [_]}
+
+- button: What does ___ say about…
+  asks: What does {} say about {}?
+  verb: find
+  subject: clips
+  rows:
+    - {field: speaker, condition: is, values: [_]}
+    - {field: topic, condition: might_talk_about, values: [_]}
+
+- button: Where does ___ come up alongside…
+  asks: Where does {} come up alongside {}?
+  verb: find
+  subject: clips
+  rows:
+    - {field: topic, condition: alongside, values: [_, _]}
+
+- button: Which interviews mention…
+  asks: Which interviews mention {}?
+  verb: find
+  subject: interviews
+  rows:
+    - {field: location, condition: talks_about, values: [_]}
+
+- button: How often does ___ come up?
+  asks: How often does {} come up?
+  verb: count
+  subject: clips
+  rows:
+    - {field: topic, condition: might_talk_about, values: [_]}
+
+- button: Who says the words…
+  asks: Who says “{}”?
+  verb: find
+  subject: paragraphs
+  rows:
+    - {field: words, condition: contains, values: [_]}
