@@ -13,7 +13,7 @@ import yaml
 from ..errors import ToolkitError
 from ..project import Project
 
-STEP_NAMES = ("import", "clip", "label", "summarize", "topics", "locations", "export")
+STEP_NAMES = ("import", "clip", "label", "summarize", "topics", "locations", "export", "ask")
 
 
 def read_yaml(path: Path) -> dict:

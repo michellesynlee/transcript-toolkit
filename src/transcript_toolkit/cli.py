@@ -166,6 +166,18 @@ def build_parser() -> argparse.ArgumentParser:
                          help="re-render the review page from the existing deliverable")
     pa.set_defaults(func=cmd_summarize_annotate)
 
+    p = sub.add_parser("ask", parents=[common],
+                       help="questions about the collection (the app's Ask page)")
+    asub = p.add_subparsers(dest="action", metavar="<action>", required=True)
+    pa = asub.add_parser("summarize", parents=[common],
+                         help="one AI sentence on what an answer's passages say (costs one call)")
+    pa.add_argument("--question", metavar="JSON", required=True,
+                    help="the question, as the Ask page writes it")
+    pa.add_argument("--title", metavar="TEXT", default=None,
+                    help="the question as it reads on the page (default: its plain-words form)")
+    pa.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
+    pa.set_defaults(func=cmd_ask_summarize)
+
     p = sub.add_parser("topics", parents=[common],
                        help="score clips against your topic list(s), roll up to interview tags")
     tsub = p.add_subparsers(dest="action", metavar="<action>", required=True)
@@ -405,6 +417,12 @@ def cmd_summarize(args) -> None:
                   pool_sessions=args.pool_sessions, yes=args.yes,
                   skip_demo_check=args.skip_demo_check, batch=args.batch,
                   unsynced=args.unsynced)
+
+
+def cmd_ask_summarize(args) -> None:
+    from .steps.ask_summary import run_ask_summary
+
+    run_ask_summary(_project(args), args.question, title=args.title, yes=args.yes)
 
 
 def cmd_summarize_annotate(args) -> None:

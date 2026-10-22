@@ -47,7 +47,7 @@ def step_name(key: str) -> str:
     """The step's own title, so the report names things the way the rest of the app does."""
     base, _, set_name = key.partition(":")
     step = content.BY_SLUG.get(base)
-    title = step.title if step else base
+    title = step.title if step else content.SPEND_NAMES.get(base, base)
     return f"{title} · {set_name}" if set_name else title
 
 

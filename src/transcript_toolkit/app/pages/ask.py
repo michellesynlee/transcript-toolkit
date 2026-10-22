@@ -18,12 +18,12 @@ from urllib.parse import quote
 import pandas as pd
 from nicegui import ui
 
-from ...core import ask, ask_quick
+from ...core import ask, ask_quick, ask_summary
 from ...errors import ToolkitError
 from ...steps import freshness
-from .. import theme
+from .. import content, theme
 from ..context import CONTEXT
-from .common import guard, info, section, shell
+from .common import guard, info, launch, run_status, section, shell
 
 HREF = "/ask"
 VIEW = "/ask/view"
@@ -435,6 +435,7 @@ class _Results:
                 ui.label(counts(df)).classes("text-sm opacity-70")
                 if "match" in df.columns and (df["match"] == "possible").any():
                     info(MATCH_HELP)
+            self._summary(q, df, title)
             with ui.row().classes("gap-2"):
                 if self.preview:
                     ui.button("Open in new tab", icon="open_in_new",
@@ -442,7 +443,8 @@ class _Results:
                         .props("flat dense no-caps")
                 export_button(df)
             if df.empty:
-                ui.label("Nothing matches.").classes("text-sm")
+                if ask_summary.without_ai(df) is None:      # else it has already said so
+                    ui.label("Nothing matches.").classes("text-sm")
                 return
             if q.verb != "compare":
                 ui.label("Click a row to read it in its transcript."
@@ -464,6 +466,34 @@ class _Results:
             if self.preview and len(df) > PREVIEW_ROWS:
                 ui.label(f"Showing the first {PREVIEW_ROWS} of {len(df)}. Open in new tab to "
                          f"see them all.").classes("text-xs opacity-60")
+
+    def _summary(self, q: ask.Question, df: pd.DataFrame, title: str) -> None:
+        """A sentence on what the passages say: from the counts when there is nothing to read,
+        the saved summary when this was asked before, else the button that pays for one."""
+        plain = ask_summary.without_ai(df)
+        if plain:
+            ui.label(plain).classes("text-sm italic").mark("ask-plain")
+            return
+        if q.verb != "find" or not ask_summary.summarisable(df):
+            return
+        try:
+            ask_summary.add_missing_files(self.project)
+            prepared = ask_summary.prepare(self.project, q, title, answer=df)
+        except ToolkitError as e:
+            ui.label(f"No AI summary: {e}").classes("text-xs opacity-60")
+            return
+        said = ask_summary.saved(self.project, prepared)
+        if said:
+            summary_card(said, prepared.material)
+            return
+        if not self.preview:                            # the new tab only shows a saved one
+            return
+        cost = ask_summary.describe(ask_summary.estimate(self.project, prepared))
+        argv = content.ask_summary_argv(json.dumps(ask_quick.question_to(q)), title)
+        ui.button(f"Read AI summary ({cost})", icon="auto_awesome",
+                  on_click=lambda: launch(content.ASK_SUMMARY_TITLE, argv, HREF)) \
+            .props("outline dense no-caps").mark("ask-summary")
+        run_status(titles=[content.ASK_SUMMARY_TITLE], on_finished=self.body.refresh)
 
     def open(self, result: dict, q: ask.Question) -> None:
         if "clip" in result or "paragraph" in result:
@@ -499,6 +529,19 @@ class _Results:
 
 
 # --- shared helpers ---------------------------------------------------------------------------
+
+CAUTION = ("This is an AI's reading of the passages below. It can be wrong, or leave things "
+           "out: read the passages themselves before relying on it.")
+
+
+def summary_card(summary: str, m: ask_summary.Material) -> None:
+    read = (f"the clearest {m.n_read} of {m.n_found} passages" if m.n_read < m.n_found
+            else f"{m.n_read} passage{'s' if m.n_read != 1 else ''}")
+    with ui.card().classes(f"w-full gap-1 {theme.NOTE}").mark("ask-summary-card"):
+        ui.label(f"AI summary of {read}").classes("text-xs font-medium opacity-70")
+        ui.label(summary).classes("text-base")
+        ui.label(CAUTION).classes("text-xs opacity-70")
+
 
 def marked(text: str, words: list[str]) -> str:
     """The text, escaped, with the words it was found by marked."""

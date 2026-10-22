@@ -15,7 +15,7 @@ COMMANDS = [
     ["locations"], ["locations", "tag"], ["locations", "map"], ["locations", "rollup"],
     ["locations", "thresholds"], ["locations", "annotate"], ["locations", "survey"],
     ["locations", "preview"],
-    ["export"], ["cost"], ["status"],
+    ["export"], ["cost"], ["status"], ["ask"], ["ask", "summarize"],
 ]
 
 # steps that can go to the Batch API. Clip is the odd one: its chunks are sequential (chunk

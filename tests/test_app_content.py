@@ -46,6 +46,8 @@ def test_what_to_compare_becomes_real_flags(step):
 def test_standalone_commands_are_real_commands():
     parses(list(content.SAMPLE.argv))
     parses(list(content.IMPORT.argv))
+    parses(content.ask_summary_argv('{"verb": "find", "subject": "clips"}', "Who says “x”?"))
+    assert "--yes" not in content.ask_summary_argv("{}", "t")    # the CLI asks about the cost
 
 
 def test_one_import_reads_both_transcript_folders():

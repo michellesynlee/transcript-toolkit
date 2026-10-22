@@ -150,6 +150,17 @@ IMPORT = Action(
     argv=("import",),
 )
 
+# The Ask page's one paid move: a sentence on what an answer's passages say. The question goes
+# as the JSON the page keeps it in; the cost question is the CLI's, as for every full run.
+ASK_SUMMARY_TITLE = "AI summary"
+# Paid calls that are not a pipeline step, as the cost report names them (by cache file).
+SPEND_NAMES = {"ask": "Ask · AI summaries"}
+
+
+def ask_summary_argv(question_json: str, title: str) -> list[str]:
+    return ["ask", "summarize", "--question", question_json, "--title", title]
+
+
 STEPS: tuple[Step, ...] = (
     Step(
         key="clip", slug="clip", title="Clip", order=1,

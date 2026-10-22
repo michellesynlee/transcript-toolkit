@@ -225,3 +225,68 @@ async def test_a_topic_answer_marks_nothing(user: User, open_tagged):
     await user.open(view_href(q))
     await user.should_see("2 found")
     assert all("<mark" not in e.content for e in user.find(marker="ask-card-text-0").elements)
+
+
+# --- the AI summary ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_summary_button_says_what_it_costs_and_runs_the_real_command(
+        user: User, open_tagged, monkeypatch):
+    import sys
+
+    from transcript_toolkit.app import jobs
+    monkeypatch.setattr(CONTEXT, "jobs", jobs.JobManager())
+    monkeypatch.setattr(jobs, "CHILD_COMMAND", [
+        sys.executable, "-u", "-c", "import sys; print('RAN', ' '.join(sys.argv[1:]))"])
+    await user.open("/ask")
+    await choose(user, "ask-mode", "build")
+    await choose(user, "ask-field-0", "topic:main")
+    await choose(user, "ask-condition-0", "might_talk_about")
+    await choose(user, "ask-value-0-0", "Education")
+    user.find(marker="ask").click()
+    await asyncio.sleep(0.2)
+    button = user.find(marker="ask-summary").elements.pop()
+    assert button.props["label"].startswith("Read AI summary (about ")
+    assert "$" in button.props["label"]
+    user.find(marker="ask-summary").click()
+    await asyncio.sleep(1.5)
+    job = CONTEXT.jobs.current
+    assert job is not None and job.command.startswith("toolkit ask summarize --question ")
+    assert "--yes" not in job.command                    # the CLI asks about the money
+
+
+@pytest.mark.asyncio
+async def test_a_count_has_no_summary(user: User, open_tagged):
+    await user.open("/ask")
+    await choose(user, "ask-quick", "How often does ___ come up?")
+    await choose(user, "ask-blank-0", "Education")
+    user.find(marker="ask").click()
+    await user.should_see("How often does Education come up?")
+    await user.should_not_see(marker="ask-summary")
+
+
+@pytest.mark.asyncio
+async def test_a_saved_summary_shows_with_its_caution(user: User, open_tagged):
+    from transcript_toolkit.core import ask_summary
+    from transcript_toolkit.core.cache import JsonlAppender
+
+    q = Question("find", "clips", (Row("topic:main", "might_talk_about", ("Education",)),))
+    title = "Find clips where topic might be Education (narrators)"
+    p = ask_summary.prepare(open_tagged, q, title)
+    JsonlAppender(ask_summary.cache_path(open_tagged)).append(
+        {"cache_key": p.key, "summary": "Ann loved school.", "ts": "2026-10-22T00:00:00",
+         "model": "gpt-5.6-luna", "usage": {"input_tokens": 1, "output_tokens": 1}})
+    await user.open(view_href(q))
+    await user.should_see("Ann loved school.")
+    await user.should_see("AI summary of 3 passages")
+    await user.should_see("It can be wrong, or leave things out: read the passages themselves "
+                          "before relying on it.")
+    await user.should_not_see(marker="ask-summary")           # nothing to pay for
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_summarize_says_so_without_a_button(user: User, open_tagged):
+    q = Question("find", "clips", (Row("words", "contains", ("zebra",)),))
+    await user.open(view_href(q))
+    await user.should_see("Nothing in the transcripts matches this.")
+    await user.should_not_see(marker="ask-summary")

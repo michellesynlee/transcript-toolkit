@@ -1690,6 +1690,17 @@ $ toolkit summarize annotate
   re-render the review page from the existing deliverable
   --project DIR — workspace directory (default: walk up from the current directory)
 
+$ toolkit ask
+  questions about the collection (the app's Ask page)
+  --project DIR — workspace directory (default: walk up from the current directory)
+
+$ toolkit ask summarize
+  one AI sentence on what an answer's passages say (costs one call)
+  --project DIR — workspace directory (default: walk up from the current directory)
+  --question JSON — the question, as the Ask page writes it
+  --title TEXT — the question as it reads on the page (default: its plain-words form)
+  --yes — skip the cost confirmation prompt
+
 $ toolkit topics
   score clips against your topic list(s), roll up to interview tags
   --project DIR — workspace directory (default: walk up from the current directory)
