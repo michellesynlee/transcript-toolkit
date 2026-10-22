@@ -40,7 +40,7 @@ def test_a_filled_quick_question_reads_as_itself(tagged):
     assert ask_quick.wording(q, quicks, fields) == "Who talks about Education?"
     both = Question(q.verb, q.subject, q.rows, ("Narrator", "Interviewer"))
     assert ask_quick.wording(both, quicks, fields) == \
-        "Find speakers where topic talks about Education (narrators and interviewers)"
+        "Find speakers where topic is Education (narrators and interviewers)"
 
 
 def test_fill_needs_exactly_the_blanks(tagged):
@@ -54,7 +54,7 @@ def test_saved_questions_live_with_the_project(tagged):
     fields = ask.fields(tagged)
     q = Question("find", "clips", (Row("topic:main", "talks_about", ("Work",)),))
     kept = ask_quick.save(tagged, q, fields)
-    assert kept.button == "Find clips where topic talks about Work (narrators)"
+    assert kept.button == "Find clips where topic is Work (narrators)"
     assert ask_quick.saved(tagged) == [kept]
     on_disk = json.loads((tagged.toolkit_dir / "saved_questions.json").read_text())
     assert on_disk[0]["question"]["rows"][0]["values"] == ["Work"]

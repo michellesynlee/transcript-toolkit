@@ -178,7 +178,7 @@ def test_mostly_talks_about_is_the_rollup_tag(tagged):
 
 
 def test_mostly_is_for_interviews_only(tagged):
-    with pytest.raises(ToolkitError, match="mostly talks about"):
+    with pytest.raises(ToolkitError, match="is mostly"):
         _ask(tagged, "find", "clips", ("topic:main", "mostly_talks_about", ("Family",)))
 
 
@@ -229,8 +229,8 @@ def test_compare_has_a_column_per_group(tagged):
                groups=[("topic:main", "talks_about", ("Education",)),
                        ("topic:main", "talks_about", ("Family",))])
     assert out.to_dict("records") == [
-        {"interview": "alpha", "topic talks about Education": 2, "topic talks about Family": 1},
-        {"interview": "beta", "topic talks about Education": 0, "topic talks about Family": 1}]
+        {"interview": "alpha", "topic is Education": 2, "topic is Family": 1},
+        {"interview": "beta", "topic is Education": 0, "topic is Family": 1}]
 
 
 # --- refusals and readback --------------------------------------------------------------------
@@ -247,7 +247,7 @@ def test_readback(tagged):
                                    Row("words", "contains", ("school",))),
                  ("Narrator", "Interviewer"))
     assert ask.readback(q, ask.fields(tagged)) == \
-        'Find clips where topic might talk about Education and words contains "school" ' \
+        'Find clips where topic might be Education and words contains "school" ' \
         '(narrators and interviewers)'
 
 
@@ -295,7 +295,7 @@ def test_readback_says_or(tagged):
     q = Question("find", "clips", (Row("topic:main", "talks_about", ("Work",)),
                                    Row("words", "contains_any", ("Kenya", "Ghana"), "or")))
     assert ask.readback(q) == \
-        'Find clips where topic talks about Work or words contains any of "Kenya", "Ghana" ' \
+        'Find clips where topic is Work or words contains any of "Kenya", "Ghana" ' \
         '(narrators)'
 
 

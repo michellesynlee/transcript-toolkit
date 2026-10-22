@@ -165,6 +165,10 @@ def test_marking_escapes_the_transcript():
 async def test_the_new_tab_view_shows_the_whole_answer(user: User, open_tagged):
     q = Question("find", "clips", (Row("topic:main", "might_talk_about", ("Education",)),))
     await user.open(view_href(q))
-    await user.should_see("Find clips where topic might talk about Education (narrators)")
+    await user.should_see("Find clips where topic might be Education (narrators)")
     await user.should_see("3 found · 2 clear, 1 possible")
-    assert "why education mattered" in table_text(user)
+    await user.should_see("Education mattered to my family.")   # the whole text, in a card
+    await user.should_see("possible match")
+    user.find(marker="ask-card-0").trigger("click")
+    await asyncio.sleep(0.2)
+    await user.should_see(marker="ask-passage")

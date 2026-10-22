@@ -406,11 +406,18 @@ class _Results:
                 ui.label("Click a row to read it in its transcript."
                          if "clip" in df.columns or "paragraph" in df.columns
                          else "Click a row to see its clips.").classes("text-xs opacity-60")
-            shown = df.head(PREVIEW_ROWS) if self.preview else df
-            t = results_table(shown, clip_text=TEXT_PREVIEW if self.preview else None)
-            if q.verb != "compare":
-                t.classes("cursor-pointer")
-                t.on("rowClick", lambda e: self.open(df.iloc[int(e.args[1]["_id"])].to_dict(), q))
+            def open_row(i: int) -> None:
+                self.open(df.iloc[i].to_dict(), q)
+
+            clickable = q.verb != "compare"
+            if self.preview or "text" not in df.columns:
+                t = results_table(df.head(PREVIEW_ROWS) if self.preview else df,
+                                  clip_text=TEXT_PREVIEW)
+                if clickable:
+                    t.classes("cursor-pointer")
+                    t.on("rowClick", lambda e: open_row(int(e.args[1]["_id"])))
+            else:
+                results_cards(df, open_row)
             if self.preview and len(df) > PREVIEW_ROWS:
                 ui.label(f"Showing the first {PREVIEW_ROWS} of {len(df)}. Open in new tab to "
                          f"see them all.").classes("text-xs opacity-60")
@@ -480,6 +487,22 @@ def results_table(df: pd.DataFrame, clip_text: int | None = None):
     rows = [{"_id": i, **r} for i, r in enumerate(shown.to_dict("records"))]
     return ui.table(rows=rows, columns=columns, row_key="_id").classes("w-full") \
         .props("dense flat wrap-cells")
+
+
+def results_cards(df: pd.DataFrame, on_click) -> None:
+    """One card per result, its text at full width: for reading, where a table's narrow column
+    would wrap a clip into a ribbon."""
+    meta = [c for c in df.columns if c not in ("text", "match")]
+    for i, r in enumerate(df.fillna("").astype(str).to_dict("records")):
+        with ui.card().classes("w-full gap-1 cursor-pointer").on("click", lambda _, i=i: on_click(i)) \
+                .mark(f"ask-card-{i}"):
+            with ui.row().classes("w-full items-center gap-3 text-xs opacity-70"):
+                for c in meta:
+                    if r[c]:
+                        ui.label(f"{c.capitalize()}: {r[c]}")
+                if r.get("match") == "possible":
+                    ui.label("possible match").classes("tk-caution font-medium")
+            ui.label(r["text"]).classes("text-sm whitespace-pre-line leading-relaxed")
 
 
 def export_button(df: pd.DataFrame) -> None:

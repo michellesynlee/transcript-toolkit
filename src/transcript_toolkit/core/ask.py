@@ -44,21 +44,21 @@ ROLES = ("Narrator", "Interviewer", "Other")      # as core/docx.infer_role assi
 
 @dataclass(frozen=True)
 class Condition:
-    words: str              # as the sentence reads
+    words: str              # as the sentence reads after its field: "topic is Education"
     n_values: str           # "one" | "some" | "two" | "text"
     negative: bool = False
     subjects: tuple[str, ...] = SUBJECTS
 
 
 CONDITIONS = {
-    "talks_about": Condition("talks about", "one"),
-    "might_talk_about": Condition("might talk about", "one"),
-    "never_mentions": Condition("never mentions", "one", negative=True),
-    "only_talks_about": Condition("only talks about", "one", subjects=("clips",)),
-    "mostly_talks_about": Condition("mostly talks about", "one", subjects=("interviews",)),
-    "any_of": Condition("talks about any of", "some"),
-    "all_of": Condition("talks about all of", "some"),
-    "alongside": Condition("alongside", "two", subjects=("clips", "speakers")),
+    "talks_about": Condition("is", "one"),
+    "might_talk_about": Condition("might be", "one"),
+    "never_mentions": Condition("is not", "one", negative=True),
+    "only_talks_about": Condition("is only", "one", subjects=("clips",)),
+    "mostly_talks_about": Condition("is mostly", "one", subjects=("interviews",)),
+    "any_of": Condition("is any of", "some"),
+    "all_of": Condition("includes all of", "some"),
+    "alongside": Condition("includes", "two", subjects=("clips", "speakers")),
     "is": Condition("is", "one"),
     "is_not": Condition("is not", "one", negative=True),
     "contains": Condition("contains", "text"),
@@ -586,7 +586,7 @@ def row_words(row: Row, titles: dict[str, str] | None = None) -> str:
     title = (titles or {}).get(row.field, row.field.split(":", 1)[0])
     cond = CONDITIONS[row.condition]
     if row.condition == "alongside":
-        return f"{title} {row.values[0]} alongside {row.values[1]}"
+        return f"{title} includes {row.values[0]} alongside {row.values[1]}"
     if cond.n_values in ("text", "texts"):
         return f"{title} {cond.words} " + ", ".join(f'"{v}"' for v in row.values)
     return f"{title} {cond.words} {', '.join(row.values)}"
