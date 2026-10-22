@@ -1,5 +1,6 @@
 """The Ask page, driven the way a user drives it, on the collection in test_ask.py."""
 import asyncio
+import re
 
 import pytest
 from nicegui import ui
@@ -23,9 +24,14 @@ async def type_into(user: User, marker: str, text: str) -> None:
     await asyncio.sleep(0.05)
 
 
-def table_text(user: User) -> str:
+def table_html(user: User) -> str:
     """Everything in the results table: the harness sees elements, not a table's cells."""
     return " ".join(str(v) for t in user.find(ui.table).elements for r in t.rows for v in r.values())
+
+
+def table_text(user: User) -> str:
+    """The table as it reads, without the marks on the words it was found by."""
+    return re.sub(r"<[^>]+>", "", table_html(user))
 
 
 async def click_row(user: User, i: int) -> None:
@@ -193,3 +199,29 @@ async def test_typing_a_topic_name_in_any_case_picks_the_topic(user: User, open_
     user.find(marker="ask").click()
     await user.should_see("Who talks about Family?")
     assert "Bob" in table_text(user)
+
+
+@pytest.mark.asyncio
+async def test_the_words_searched_for_are_highlighted_in_the_answer(user: User, open_tagged):
+    await user.open("/ask")
+    await choose(user, "ask-quick", "Who says the words…")
+    await type_into(user, "ask-blank-0", "SCHOOL")
+    user.find(marker="ask").click()
+    await user.should_see("Who says “SCHOOL”?")
+    assert '<mark class="tk-found">school</mark>' in table_html(user)
+
+
+@pytest.mark.asyncio
+async def test_and_in_the_new_tab(user: User, open_tagged):
+    q = Question("find", "clips", (Row("words", "contains_any", ("Kenya", "election")),))
+    await user.open(view_href(q))
+    texts = [e.content for e in user.find(marker="ask-card-text-0").elements]
+    assert texts and '<mark class="tk-found">' in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_a_topic_answer_marks_nothing(user: User, open_tagged):
+    q = Question("find", "clips", (Row("topic:main", "talks_about", ("Education",)),))
+    await user.open(view_href(q))
+    await user.should_see("2 found")
+    assert all("<mark" not in e.content for e in user.find(marker="ask-card-text-0").elements)

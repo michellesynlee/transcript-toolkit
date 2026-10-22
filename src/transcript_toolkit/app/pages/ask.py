@@ -452,14 +452,15 @@ class _Results:
                 self.open(df.iloc[i].to_dict(), q)
 
             clickable = q.verb != "compare"
+            found = found_words(q)
             if self.preview or "text" not in df.columns:
                 t = results_table(df.head(PREVIEW_ROWS) if self.preview else df,
-                                  clip_text=TEXT_PREVIEW)
+                                  clip_text=TEXT_PREVIEW, found=found)
                 if clickable:
                     t.classes("cursor-pointer")
                     t.on("rowClick", lambda e: open_row(int(e.args[1]["_id"])))
             else:
-                results_cards(df, open_row)
+                results_cards(df, open_row, found)
             if self.preview and len(df) > PREVIEW_ROWS:
                 ui.label(f"Showing the first {PREVIEW_ROWS} of {len(df)}. Open in new tab to "
                          f"see them all.").classes("text-xs opacity-60")
@@ -472,8 +473,7 @@ class _Results:
 
     def show_transcript(self, result: dict, q: ask.Question) -> None:
         p = ask.passage(self.project, result)
-        words = [v for r in q.rows if r.field == "words" and r.condition in FOUND_BY_WORDS
-                 for v in r.values]
+        words = found_words(q).get("text", [])
         self.dialog.clear()
         with self.dialog, ui.card().classes("w-full max-w-3xl gap-1"):
             with ui.row().classes("w-full items-center"):
@@ -509,6 +509,16 @@ def marked(text: str, words: list[str]) -> str:
     return out
 
 
+def found_words(q: ask.Question) -> dict[str, list[str]]:
+    """The words a question looked for, by the answer column they were found in."""
+    column = {"words": "text", "label": "label"}
+    found: dict[str, list[str]] = {}
+    for r in (*q.rows, *q.groups):
+        if r.field in column and r.condition in FOUND_BY_WORDS:
+            found.setdefault(column[r.field], []).extend(r.values)
+    return found
+
+
 def counts(df: pd.DataFrame) -> str:
     if "match" not in df.columns:
         return f"{len(df)} interviews"
@@ -517,21 +527,31 @@ def counts(df: pd.DataFrame) -> str:
     return f"{len(df)} found" + (f" · {clear} clear, {possible} possible" if possible else "")
 
 
-def results_table(df: pd.DataFrame, clip_text: int | None = None):
+def results_table(df: pd.DataFrame, clip_text: int | None = None,
+                  found: dict[str, list[str]] | None = None):
+    """`found`: words to mark, by column. Those cells are sent as HTML, every one of them
+    escaped by `marked`; the rest stay plain text."""
     shown = df.copy()
     if clip_text and "text" in shown.columns:
         shown["text"] = shown["text"].map(
             lambda t: t if len(str(t)) <= clip_text else str(t)[:clip_text].rstrip() + "…")
     shown = shown.fillna("").astype(str)
+    marking = [c for c in (found or {}) if c in shown.columns]
+    for c in marking:
+        shown[c] = shown[c].map(lambda t, w=found[c]: marked(t, w))
     columns = [{"name": c, "label": c.capitalize(), "field": c, "align": "left",
                 "style": "white-space: normal; min-width: 18rem" if c == "text" else ""}
                for c in shown.columns]
     rows = [{"_id": i, **r} for i, r in enumerate(shown.to_dict("records"))]
-    return ui.table(rows=rows, columns=columns, row_key="_id").classes("w-full") \
+    table = ui.table(rows=rows, columns=columns, row_key="_id").classes("w-full") \
         .props("dense flat wrap-cells")
+    for c in marking:
+        table.add_slot(f"body-cell-{c}",
+                       '<q-td :props="props"><span v-html="props.value"></span></q-td>')
+    return table
 
 
-def results_cards(df: pd.DataFrame, on_click) -> None:
+def results_cards(df: pd.DataFrame, on_click, found: dict[str, list[str]]) -> None:
     """One card per result, its text at full width: for reading, where a table's narrow column
     would wrap a clip into a ribbon."""
     meta = [c for c in df.columns if c not in ("text", "match")]
@@ -541,10 +561,12 @@ def results_cards(df: pd.DataFrame, on_click) -> None:
             with ui.row().classes("w-full items-center gap-3 text-xs opacity-70"):
                 for c in meta:
                     if r[c]:
-                        ui.label(f"{c.capitalize()}: {r[c]}")
+                        ui.html(f"{c.capitalize()}: {marked(r[c], found.get(c, []))}",
+                                sanitize=False)
                 if r.get("match") == "possible":
                     ui.label("possible match").classes("tk-caution font-medium")
-            ui.label(r["text"]).classes("text-sm whitespace-pre-line leading-relaxed")
+            ui.html(marked(r["text"], found.get("text", [])), sanitize=False) \
+                .classes("text-sm whitespace-pre-line leading-relaxed").mark(f"ask-card-text-{i}")
 
 
 def export_button(df: pd.DataFrame) -> None:
