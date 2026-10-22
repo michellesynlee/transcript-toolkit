@@ -31,7 +31,8 @@ class Quick:
 
 def question_from(d: dict) -> Question:
     def rows(key):
-        return tuple(Row(r["field"], r["condition"], tuple(str(v) for v in r["values"]))
+        return tuple(Row(r["field"], r["condition"], tuple(str(v) for v in r["values"]),
+                         r.get("join", "and"))
                      for r in d.get(key) or ())
     return Question(d["verb"], d["subject"], rows("rows"),
                     tuple(d.get("roles") or ("Narrator",)), rows("groups"))
@@ -39,7 +40,8 @@ def question_from(d: dict) -> Question:
 
 def question_to(q: Question) -> dict:
     def rows(rs):
-        return [{"field": r.field, "condition": r.condition, "values": list(r.values)} for r in rs]
+        return [{"field": r.field, "condition": r.condition, "values": list(r.values),
+                 "join": r.join} for r in rs]
     return {"verb": q.verb, "subject": q.subject, "rows": rows(q.rows), "roles": list(q.roles),
             "groups": rows(q.groups)}
 

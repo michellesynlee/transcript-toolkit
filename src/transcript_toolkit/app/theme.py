@@ -37,6 +37,7 @@ CAUTION = "#8A6A22"
 NOTE = "tk-note"            # something worth knowing
 WARN = "tk-warn"            # something to fix before going on
 FAIL = "tk-fail"            # something that went wrong
+FOUND = "tk-found"          # the passage an answer points at, and the words it looked for
 
 CSS = f"""
 body {{ background:{PAPER}; color:{INK}; }}
@@ -62,6 +63,10 @@ body.body--dark .q-field--outlined .q-field__control {{ background:#101A24; }}
 .tk-terminal {{ background:{PAPER_DARK}; color:{CREAM}; }}
 .tk-row + .tk-row {{ border-top:1px solid {EDGE}; }}
 body.body--dark .tk-row + .tk-row {{ border-top-color:{EDGE_DARK}; }}
+.tk-found {{ background:#F3E6BF; }}
+body.body--dark .tk-found {{ background:#3D3420; }}
+mark.tk-found {{ color:inherit; padding:0 2px; border-radius:2px; background:#E8CF84; }}
+body.body--dark mark.tk-found {{ background:#6B5A2E; }}
 /* A quiet rule inside a card, where one block of it is a different kind of thing. */
 .tk-divide {{ border-top:1px solid {EDGE}; }}
 body.body--dark .tk-divide {{ border-top-color:{EDGE_DARK}; }}

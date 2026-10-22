@@ -18,7 +18,8 @@ the only paths named here are the companion tables written beside those in the s
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, replace
 from functools import cached_property
 
 import pandas as pd
@@ -61,11 +62,16 @@ CONDITIONS = {
     "is": Condition("is", "one"),
     "is_not": Condition("is not", "one", negative=True),
     "contains": Condition("contains", "text"),
+    "not_contains": Condition("does not contain", "text", negative=True),
+    "contains_any": Condition("contains any of", "texts"),
+    "contains_all": Condition("contains all of", "texts"),
+    "whole_word": Condition("contains the whole word", "text"),
 }
+TEXT_CONDITIONS = ("contains", "not_contains", "contains_any", "contains_all", "whole_word")
 N_VALUES = {"one": "one value", "text": "one value", "two": "two values",
-            "some": "at least one value"}
+            "some": "at least one value", "texts": "at least one value"}
 # What a negative condition rules a subject out for having.
-POSITIVE = {"never_mentions": "might_talk_about", "is_not": "is"}
+POSITIVE = {"never_mentions": "might_talk_about", "is_not": "is", "not_contains": "contains"}
 
 PARAGRAPH_FIELDS = ("words", "speaker", "interview", "timing")   # answered from the transcript
 
@@ -94,6 +100,10 @@ class Row:
     field: str
     condition: str
     values: tuple[str, ...]
+    join: str = "and"       # how it joins the row before it ("and" binds tighter than "or")
+
+
+JOINS = ("and", "or")
 
 
 @dataclass(frozen=True)
@@ -197,7 +207,7 @@ def fields(project: Project) -> dict[str, Field]:
     def add(f: Field) -> None:
         out[f.key] = f
 
-    add(Field("words", "words", ("contains",), available=imported, needs="import"))
+    add(Field("words", "words", TEXT_CONDITIONS, available=imported, needs="import"))
     add(Field("speaker", "speaker", ("is", "is_not"),
               _sorted(para["speaker_label"]) if imported else (), imported, "import"))
     add(Field("interview", "interview", ("is", "is_not"),
@@ -205,7 +215,7 @@ def fields(project: Project) -> dict[str, Field]:
     add(Field("timing", "timing", ("is",), ("timed", "untimed"), imported, "import"))
 
     labelled = freshness.wrote_its_results(project, "label")
-    add(Field("label", "clip label", ("contains",), available=labelled, needs="label"))
+    add(Field("label", "clip label", TEXT_CONDITIONS, available=labelled, needs="label"))
 
     sets = topic_sets(project)
     for s in sets:
@@ -252,6 +262,8 @@ def check(question: Question, available: dict[str, Field]) -> None:
     if q.verb != "compare" and q.groups:
         raise ToolkitError("Only Compare takes groups.")
     for row in (*q.rows, *q.groups):
+        if row.join not in JOINS:
+            raise ToolkitError(f"Rows join with 'and' or 'or', not {row.join!r}.")
         f = available.get(row.field)
         if f is None:
             raise ToolkitError(f"Unknown field {row.field!r}.")
@@ -266,11 +278,11 @@ def check(question: Question, available: dict[str, Field]) -> None:
         want = CONDITIONS[row.condition].n_values
         n = len(row.values)
         if (want in ("one", "text") and n != 1) or (want == "two" and n != 2) \
-                or (want == "some" and n < 1):
+                or (want in ("some", "texts") and n < 1):
             raise ToolkitError(f"'{CONDITIONS[row.condition].words}' takes {N_VALUES[want]}.")
-        if want == "text":
-            if not row.values[0].strip():
-                raise ToolkitError(f"Type something for {f.title} to contain.")
+        if want in ("text", "texts"):
+            if not all(v.strip() for v in row.values):
+                raise ToolkitError(f"Type the {f.title} to look for.")
         else:
             unknown = [v for v in row.values if v not in f.values]
             if unknown:
@@ -306,7 +318,7 @@ def _strength(data: Collection, base: _Base, row: Row) -> pd.Series:
         return by_clip.reindex(base.ids, fill_value=False).astype(int) * CLEAR
     if row.field == "label":
         text = data.labels.reindex(base.ids).fillna("")
-        return text.str.contains(row.values[0], case=False, regex=False).astype(int) * CLEAR
+        return _text_hit(text, row).astype(int) * CLEAR
     if row.field.startswith("topic:"):
         return _topic_strength(data, base, row)
     return _place_strength(data.places(row.field).reindex(base.ids), row)
@@ -315,13 +327,26 @@ def _strength(data: Collection, base: _Base, row: Row) -> pd.Series:
 def _paragraph_hit(data: Collection, paras: pd.DataFrame, row: Row) -> pd.Series:
     v = row.values[0]
     if row.field == "words":
-        return paras["speech"].str.contains(v, case=False, regex=False)
+        return _text_hit(paras["speech"], row)
     if row.field == "speaker":
         return paras["speaker_label"] == v
     if row.field == "interview":
         return paras["interview_key"] == v
     untimed = paras["interview_id"].isin(data.untimed)
     return untimed if v == "untimed" else ~untimed
+
+
+def _text_hit(text: pd.Series, row: Row) -> pd.Series:
+    """Case-insensitive; "whole word" will not find "school" inside "schooling"."""
+    def has(v: str) -> pd.Series:
+        if row.condition == "whole_word":
+            return text.str.contains(rf"\b{re.escape(v)}\b", case=False, regex=True)
+        return text.str.contains(v, case=False, regex=False)
+
+    hits = [has(v) for v in row.values]
+    if row.condition == "contains_all":
+        return pd.concat(hits, axis=1).all(axis=1)
+    return pd.concat(hits, axis=1).any(axis=1)          # contains, any of, whole word
 
 
 def _topic_strength(data: Collection, base: _Base, row: Row) -> pd.Series:
@@ -362,9 +387,27 @@ def _subject_keys(base: _Base, subject: str) -> pd.DataFrame:
     return pd.DataFrame({"unit": list(unit), "key": keys}).drop_duplicates()
 
 
-def _matches(data: Collection, q: Question, rows: tuple[Row, ...]) -> tuple[_Base, pd.Series]:
-    """The base, and each matching unit's strength (units that do not match are left out)."""
+def or_groups(rows: tuple[Row, ...]) -> list[tuple[Row, ...]]:
+    """Split rows at each "or": "A and B or C" is (A and B) or (C)."""
+    groups: list[list[Row]] = []
+    for i, row in enumerate(rows):
+        if i == 0 or row.join == "or":
+            groups.append([])
+        groups[-1].append(row)
+    return [tuple(g) for g in groups] or [()]
+
+
+def _matches(data: Collection, q: Question, rows: tuple[Row, ...],
+             extra: tuple[Row, ...] = ()) -> tuple[_Base, pd.Series]:
+    """The base, and each matching unit's strength (units that do not match are left out).
+    `extra` rows are and-ed onto every or-group (Compare's groups)."""
     base = _base(data, q)
+    found = [_and_matches(data, q, base, (*g, *extra)) for g in or_groups(rows)]
+    strength = pd.concat(found).groupby(level=0).max() if found else pd.Series(dtype=int)
+    return base, strength.reindex([u for u in base.ids if u in strength.index])
+
+
+def _and_matches(data: Collection, q: Question, base: _Base, rows: tuple[Row, ...]) -> pd.Series:
     strength = pd.Series(CLEAR, index=base.ids)
     excluded_units: set = set()
     excluded_subjects: set = set()
@@ -393,7 +436,7 @@ def _matches(data: Collection, q: Question, rows: tuple[Row, ...]) -> tuple[_Bas
                     else data.mostly_topics(row.field.split(":", 1)[1]))
             keep &= pairs["key"].map(lambda k: row.values[0] in tags.get(k, set()))
         strength = strength[strength.index.isin(pairs.loc[keep, "unit"])]
-    return base, strength
+    return strength
 
 
 def answer(project: Project, question: Question) -> pd.DataFrame:
@@ -419,10 +462,10 @@ def _paragraph_rows(data: Collection, base: _Base, strength: pd.Series) -> pd.Da
     p = base.paras.loc[strength.index]
     time = p["turn_time_start"].where(p["sub_time_start"].astype(str) == "", p["sub_time_start"])
     out = pd.DataFrame({"interview": p["interview_key"], "session": p["interview_id"],
-                        "speaker": p["speaker_label"], "role": p["speaker_role"],
-                        "time": time, "text": p["speech"],
+                        "paragraph": p["paragraph_idx"], "speaker": p["speaker_label"],
+                        "role": p["speaker_role"], "time": time, "text": p["speech"],
                         "match": strength.map(MATCH_WORDS)})
-    return _ranked(out, strength, ["session"]).reset_index(drop=True)
+    return _ranked(out, strength, ["session", "paragraph"]).reset_index(drop=True)
 
 
 def _clip_rows(data: Collection, strength: pd.Series) -> pd.DataFrame:
@@ -485,12 +528,56 @@ def _compare(data: Collection, q: Question) -> pd.DataFrame:
     """One row per interview, one column per group: how many units match the rows and it."""
     columns = {}
     for g in q.groups:
-        base, strength = _matches(data, q, (*q.rows, g))
+        base, strength = _matches(data, q, q.rows, (replace(g, join="and"),))
         columns[row_words(g)] = _per_interview(data, base, strength) \
             .set_index("interview")[["clear", "possible"]].sum(axis=1)
     out = pd.DataFrame(columns).fillna(0).astype(int)
     out = out.loc[out.sum(axis=1).sort_values(ascending=False, kind="stable").index]
     return out.rename_axis("interview").reset_index()
+
+
+# --- from an answer back to the transcript ----------------------------------------------------
+
+@dataclass(frozen=True)
+class Passage:
+    session: str
+    first: int                  # paragraph_idx of the passage's first and last paragraph
+    last: int
+    transcript: pd.DataFrame    # the whole session: paragraph, speaker, role, time, text
+
+
+def passage(project: Project, result: dict) -> Passage:
+    """Where a paragraph or clip in an answer sits: its session's transcript, and its span."""
+    data = Collection(project)
+    if "clip" in result:
+        c = data.clips.loc[result["clip"]]
+        session, first, last = (c["interview_id"], int(c["start_paragraph_idx"]),
+                                int(c["end_paragraph_idx"]))
+    else:
+        session, first = result["session"], int(result["paragraph"])
+        last = first
+    p = data.paragraphs[data.paragraphs["interview_id"] == session].sort_values("paragraph_idx")
+    time = p["turn_time_start"].where(p["sub_time_start"].astype(str) == "", p["sub_time_start"])
+    transcript = pd.DataFrame({"paragraph": p["paragraph_idx"], "speaker": p["speaker_label"],
+                               "role": p["speaker_role"], "time": time, "text": p["speech"]})
+    return Passage(session, first, last, transcript.reset_index(drop=True))
+
+
+def narrow(project: Project, question: Question, result: dict) -> Question:
+    """An interview or speaker in an answer, opened up: the same question asked of its clips
+    (its paragraphs, before clipping). "Mostly talks about" is about the whole interview, so it
+    has already done its work and is dropped."""
+    pin = [Row("interview", "is", (result["interview"],))]
+    if "speaker" in result:
+        pin.append(Row("speaker", "is", (result["speaker"],)))
+    rows: list[Row] = []
+    for group in or_groups(question.rows):
+        kept = [r for r in group if r.condition != "mostly_talks_about"]
+        joined = [*kept, *pin]
+        rows += [replace(r, join=("or" if rows else "and") if i == 0 else "and")
+                 for i, r in enumerate(joined)]
+    clipped = freshness.wrote_its_results(project, "clip")
+    return Question("find", "clips" if clipped else "paragraphs", tuple(rows), question.roles)
 
 
 # --- the sentence -----------------------------------------------------------------------------
@@ -500,8 +587,8 @@ def row_words(row: Row, titles: dict[str, str] | None = None) -> str:
     cond = CONDITIONS[row.condition]
     if row.condition == "alongside":
         return f"{title} {row.values[0]} alongside {row.values[1]}"
-    if cond.n_values == "text":
-        return f'{title} {cond.words} "{row.values[0]}"'
+    if cond.n_values in ("text", "texts"):
+        return f"{title} {cond.words} " + ", ".join(f'"{v}"' for v in row.values)
     return f"{title} {cond.words} {', '.join(row.values)}"
 
 
@@ -514,7 +601,8 @@ def readback(question: Question, available: dict[str, Field] | None = None) -> s
     titles = {k: f.title for k, f in (available or {}).items()}
     s = f"{VERBS[q.verb]} {q.subject}"
     if q.rows:
-        s += " where " + " and ".join(row_words(r, titles) for r in q.rows)
+        s += " where " + "".join((f" {r.join} " if i else "") + row_words(r, titles)
+                                 for i, r in enumerate(q.rows))
     if q.groups:
         s += ": " + " vs ".join(row_words(g, titles) for g in q.groups)
     roles = tuple(r for r in ROLES if r in q.roles)

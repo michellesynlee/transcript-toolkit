@@ -1,13 +1,18 @@
-"""Ask page: question the collection by building a sentence, or by clicking a quick question.
+"""Ask page: question the collection with a ready-made question, or by building your own.
 
-Everything is answered by `core/ask.py` from the files the pipeline already wrote: no command
-runs, nothing is paid for, nothing in the project changes except a saved question. Export hands
-the answer to the browser as a download; it is not a deliverable and never touches outputs/.
+Two ways in, kept apart: a quick question is a sentence with blanks you fill in place; the
+builder is a filter of rows joined by "and" / "or". Either way the answer is `core/ask.py`
+filtering the files the pipeline already wrote: no command runs, nothing is paid for, nothing
+in the project changes except a saved question. An answer leads back to its transcript: a
+paragraph or clip opens at its place, an interview or speaker opens into its own clips.
+Export hands the answer to the browser as a download; it never touches outputs/.
 """
 from __future__ import annotations
 
+import html
 import io
 import json
+import re
 from urllib.parse import quote
 
 import pandas as pd
@@ -16,6 +21,7 @@ from nicegui import ui
 from ...core import ask, ask_quick
 from ...errors import ToolkitError
 from ...steps import freshness
+from .. import theme
 from ..context import CONTEXT
 from .common import guard, info, section, shell
 
@@ -25,17 +31,16 @@ PREVIEW_ROWS = 50
 TEXT_PREVIEW = 300              # characters of a clip's text shown in the preview table
 
 ROLE_CHOICES = {"Narrator": "Narrators", "Interviewer": "Interviewers", "both": "Both"}
-SUBJECT_WORDS = {"paragraphs": "paragraphs", "clips": "clips", "interviews": "interviews",
-                 "speakers": "speakers"}
 NEEDS_WORDS = {"import": "Import", "label": "Label", "topics tag": "Topics",
                "locations tag": "Locations", "locations map": "Locations (map)"}
 MATCH_HELP = ("Clear: the clip is about it (the top topic score).\n"
               "Possible: it may touch on it (a score between zero and the top).")
+MODES = {"quick": "Quick question", "build": "Build your own"}
+FOUND_BY_WORDS = ("contains", "contains_any", "contains_all", "whole_word")
 
 
-def _empty() -> dict:
-    return {"verb": "find", "subject": "clips", "roles": ["Narrator"],
-            "rows": [{"field": "", "condition": "", "values": []}], "groups": []}
+def _blank_row(join: str = "and") -> dict:
+    return {"field": "", "condition": "", "values": [], "join": join}
 
 
 def ask_page() -> None:
@@ -58,107 +63,184 @@ def ask_page() -> None:
 
 
 class _Asker:
-    """One page's question and answer. State is a plain dict shaped like a saved question."""
+    """The page: a mode switch, the quick question or the builder, and the answer under both."""
 
     def __init__(self, project, fields: dict[str, ask.Field]):
         self.project = project
         self.fields = fields
         self.clipped = freshness.wrote_its_results(project, "clip")
-        self.state = _empty()
-        if not self.clipped:
-            self.state["subject"] = "paragraphs"
-        self.answer: pd.DataFrame | None = None
-        self.question: ask.Question | None = None
-
-    # --- the parts of the page ----------------------------------------------------------------
+        self.mode = "quick"
+        self.quick: ask_quick.Quick | None = None      # the chosen quick question
+        self.blanks: list[str] = []                     # what has been filled into it
+        self.state = {"verb": "find", "subject": "clips" if self.clipped else "paragraphs",
+                      "roles": ["Narrator"], "rows": [_blank_row()], "groups": []}
+        self.results = _Results(project, fields)
 
     def draw(self) -> None:
-        self.quick_row = ui.refreshable(self._quick_row)
-        self.builder = ui.refreshable(self._builder)
-        self.results = ui.refreshable(self._results)
+        ui.toggle(MODES, value=self.mode, on_change=lambda e: self.switch(e.value)) \
+            .props("no-caps").mark("ask-mode")
+        self.panel = ui.refreshable(self._panel)
         self.normalise()
-        self.quick_row()
-        self.builder()
-        self.results()
+        self.panel()
+        self.results.draw()
 
-    def quicks(self) -> list[ask_quick.Quick]:
-        return [*ask_quick.builtin(), *ask_quick.saved(self.project)]
+    def switch(self, mode: str) -> None:
+        self.mode = mode
+        self.panel.refresh()
 
-    def _quick_row(self) -> None:
-        with ui.card().classes("w-full"):
-            with ui.row().classes("items-center gap-1"):
-                ui.label("Quick questions").classes("text-sm font-medium")
-                info("Click one to fill in the question below, then pick what goes in the "
-                     "blanks. Greyed-out ones need a step you have not run yet.")
-            with ui.row().classes("gap-2 flex-wrap"):
-                for quick in self.quicks():
-                    q = ask_quick.resolve(quick, self.fields)
-                    b = ui.button(quick.button, on_click=lambda _, q=q: self.use(q)) \
-                        .props("outline dense no-caps" + ("" if q else " disable"))
-                    if quick.saved:
-                        b.props("icon=bookmark")
-                        ui.button(icon="close",
-                                  on_click=lambda _, k=quick: self.forget(k.button)) \
-                            .props("flat round dense size=sm").tooltip("Remove this saved question")
+    def _panel(self) -> None:
+        if self.mode == "quick":
+            self._quick_panel()
+        else:
+            self._builder()
+
+    # --- quick questions ----------------------------------------------------------------------
+
+    def _quick_panel(self) -> None:
+        offered = [(k, ask_quick.resolve(k, self.fields)) for k in ask_quick.builtin()]
+        ready = {k.button: k for k, q in offered if q is not None}
+        with ui.card().classes("w-full gap-3"):
+            ui.select(list(ready), value=self.quick.button if self.quick else None,
+                      label="Choose a question",
+                      on_change=lambda e: self.choose(ready.get(e.value))) \
+                .props("outlined").classes("w-full max-w-md").mark("ask-quick")
+            waiting = len(offered) - len(ready)
+            if waiting:
+                ui.label(f"{waiting} more once you run " + ", ".join(self.missing()) + ".") \
+                    .classes("text-xs opacity-60")
+            if self.quick is not None:
+                self._sentence()
+            self._saved()
+
+    def choose(self, quick: ask_quick.Quick | None) -> None:
+        self.quick = quick
+        self.blanks = [""] * (ask_quick.blanks(quick.question) if quick else 0)
+        self.panel.refresh()
+
+    def _sentence(self) -> None:
+        """The chosen question with its blanks as boxes in the sentence itself."""
+        q = ask_quick.resolve(self.quick, self.fields)
+        blank_fields = [r.field for r in (*q.rows, *q.groups)
+                        for v in r.values if v == ask_quick.BLANK]
+        parts = self.quick.asks.split("{}")
+        with ui.row().classes("items-center gap-2 flex-wrap text-lg"):
+            for i, part in enumerate(parts):
+                if part.strip():
+                    ui.label(part.strip())
+                if i < len(blank_fields):
+                    f = self.fields[blank_fields[i]]
+
+                    def fill(e, k=i) -> None:
+                        self.blanks[k] = e.value or ""
+                    if f.values:
+                        box = ui.select(list(f.values), value=self.blanks[i] or None,
+                                        with_input=True, on_change=fill)
+                    else:
+                        box = ui.input(placeholder=f.title, value=self.blanks[i], on_change=fill)
+                    box.props("dense outlined").classes("min-w-40").mark(f"ask-blank-{i}")
+            ui.button("Ask", icon="search", on_click=self.ask_quick) \
+                .props("color=primary").mark("ask")
+
+    def _saved(self) -> None:
+        kept = ask_quick.saved(self.project)
+        if not kept:
+            return
+        ui.label("Your saved questions").classes("text-sm font-medium tk-divide pt-2 w-full")
+        with ui.column().classes("gap-1"):
+            for k in kept:
+                with ui.row().classes("items-center gap-1"):
+                    ui.button(k.button, icon="bookmark",
+                              on_click=lambda _, k=k: self.results.ask(k.question)) \
+                        .props("flat dense no-caps align=left")
+                    ui.button(icon="close", on_click=lambda _, k=k: self.forget(k.button)) \
+                        .props("flat round dense size=sm").tooltip("Remove this saved question")
+
+    def ask_quick(self) -> None:
+        if any(not v.strip() for v in self.blanks):
+            guard(ToolkitError("Fill in every blank first."))
+            return
+        self.results.ask(ask_quick.fill(ask_quick.resolve(self.quick, self.fields), self.blanks))
+
+    def forget(self, button: str) -> None:
+        ask_quick.forget(self.project, button)
+        self.panel.refresh()
+
+    # --- the builder --------------------------------------------------------------------------
 
     def _builder(self) -> None:
         s = self.state
         with ui.card().classes("w-full gap-2"):
             with ui.row().classes("items-center gap-2 flex-wrap"):
-                ui.select({k: v for k, v in ask.VERBS.items()}, value=s["verb"],
+                ui.select(dict(ask.VERBS), value=s["verb"],
                           on_change=lambda e: self.set("verb", e.value)).props("dense outlined")
-                ui.select({k: SUBJECT_WORDS[k] for k in self.subjects()}, value=s["subject"],
+                ui.select({k: k for k in self.subjects()}, value=s["subject"],
                           on_change=lambda e: self.set("subject", e.value)) \
                     .props("dense outlined")
                 ui.label("where").classes("text-sm")
             for i, row in enumerate(s["rows"]):
-                self._row_editor(s["rows"], i, row, prefix="" if i == 0 else "and")
-            with ui.row().classes("gap-2"):
-                ui.button("and…", icon="add", on_click=lambda: self.add("rows")) \
+                self._row_editor(s["rows"], i, row, joinable=i > 0)
+            with ui.row().classes("items-center gap-2"):
+                ui.button("and…", icon="add", on_click=lambda: self.add("rows", "and")) \
                     .props("flat dense no-caps")
+                ui.button("or…", icon="add", on_click=lambda: self.add("rows", "or")) \
+                    .props("flat dense no-caps")
+                info("“and” narrows: both must be true. “or” widens: either will do.\n"
+                     "“A and B or C” means (A and B) or C.")
             if s["verb"] == "compare":
                 ui.label("Compare these groups (one column each):").classes("text-sm mt-2")
                 for i, row in enumerate(s["groups"]):
-                    self._row_editor(s["groups"], i, row, prefix="vs" if i else "")
+                    self._row_editor(s["groups"], i, row, joinable=False,
+                                     prefix="vs" if i else "")
                 ui.button("another group", icon="add", on_click=lambda: self.add("groups")) \
                     .props("flat dense no-caps")
             with ui.row().classes("items-center gap-2 mt-2"):
                 ui.label("Speakers:").classes("text-sm")
                 ui.toggle(ROLE_CHOICES, value=self.role_choice(),
                           on_change=lambda e: self.set_roles(e.value)).props("dense no-caps")
-            missing = sorted({NEEDS_WORDS.get(f.needs, f.needs) for f in self.fields.values()
-                              if not f.available})
-            if missing:
-                ui.label("More to ask about after you run: " + ", ".join(missing)) \
+            if self.missing():
+                ui.label("More to ask about after you run: " + ", ".join(self.missing())) \
                     .classes("text-xs opacity-60")
-            ui.button("Ask", icon="search", on_click=self.run).props("color=primary").mark("ask")
+            with ui.row().classes("gap-2"):
+                ui.button("Ask", icon="search", on_click=self.ask_built) \
+                    .props("color=primary").mark("ask")
+                ui.button("Save as a quick question", icon="bookmark_add", on_click=self.save) \
+                    .props("flat dense no-caps")
 
-    def _row_editor(self, rows: list, i: int, row: dict, prefix: str) -> None:
+    def _row_editor(self, rows: list, i: int, row: dict, joinable: bool, prefix: str = "") -> None:
         options = self.field_options()
         with ui.row().classes("items-center gap-2 flex-wrap"):
-            if prefix:
-                ui.label(prefix).classes("text-sm w-8")
+            if joinable:
+                ui.select({"and": "and", "or": "or"}, value=row["join"],
+                          on_change=lambda e, r=row: r.__setitem__("join", e.value)) \
+                    .props("dense borderless").classes("w-14").mark(f"ask-join-{i}")
+            elif prefix:
+                ui.label(prefix).classes("text-sm w-14")
             ui.select(options, value=row["field"] or None,
                       on_change=lambda e, r=row: self.set_row(r, "field", e.value)) \
-                .props("dense outlined").classes("min-w-32")
+                .props("dense outlined").classes("min-w-32").mark(f"ask-field-{i}")
             f = self.fields.get(row["field"])
             if f is None:
                 return
             conds = {c: ask.CONDITIONS[c].words for c in f.conditions_for(self.state["subject"])}
             ui.select(conds, value=row["condition"] or None,
                       on_change=lambda e, r=row: self.set_row(r, "condition", e.value)) \
-                .props("dense outlined")
-            self._values_editor(row, f)
+                .props("dense outlined").mark(f"ask-condition-{i}")
+            self._values_editor(row, f, i)
             if len(rows) > 1:
                 ui.button(icon="close", on_click=lambda _, rs=rows, k=i: self.remove(rs, k)) \
                     .props("flat round dense size=sm")
 
-    def _values_editor(self, row: dict, f: ask.Field) -> None:
+    def _values_editor(self, row: dict, f: ask.Field, i: int) -> None:
         want = ask.CONDITIONS[row["condition"]].n_values if row["condition"] else "one"
         if want == "text":
             ui.input(placeholder="words to look for", value=(row["values"] or [""])[0],
                      on_change=lambda e, r=row: r.__setitem__("values", [e.value])) \
-                .props("dense outlined").classes("min-w-48").mark("ask-words")
+                .props("dense outlined").classes("min-w-48").mark(f"ask-words-{i}")
+        elif want == "texts":
+            ui.input(placeholder="words, separated by commas", value=", ".join(row["values"]),
+                     on_change=lambda e, r=row: r.__setitem__(
+                         "values", [w.strip() for w in (e.value or "").split(",") if w.strip()])) \
+                .props("dense outlined").classes("min-w-64").mark(f"ask-words-{i}")
         elif want == "some":
             ui.select(list(f.values), multiple=True, value=list(row["values"]),
                       on_change=lambda e, r=row: r.__setitem__("values", list(e.value or []))) \
@@ -166,51 +248,11 @@ class _Asker:
         else:
             for k in range(2 if want == "two" else 1):
                 if k:
-                    ui.label("alongside" if want == "two" else "").classes("text-sm")
+                    ui.label("alongside").classes("text-sm")
                 ui.select(list(f.values), value=(row["values"][k] or None)
                           if k < len(row["values"]) else None, with_input=True,
                           on_change=lambda e, r=row, k=k: self.set_value(r, k, e.value)) \
-                    .props("dense outlined").classes("min-w-40")
-
-    def _results(self) -> None:
-        if self.answer is None:
-            return
-        df, q = self.answer, self.question
-        with ui.card().classes("w-full gap-2"):
-            ui.label(ask_quick.wording(q, self.quicks(), self.fields)) \
-                .classes("text-lg font-medium")
-            with ui.row().classes("items-center gap-2"):
-                ui.label(self.counts(df)).classes("text-sm opacity-70")
-                if "match" in df.columns and (df["match"] == "possible").any():
-                    info(MATCH_HELP)
-            with ui.row().classes("gap-2"):
-                ui.button("Save as a quick question", icon="bookmark_add", on_click=self.save) \
-                    .props("flat dense no-caps")
-                ui.button("Open in new tab", icon="open_in_new",
-                          on_click=lambda: ui.navigate.to(view_href(q), new_tab=True)) \
-                    .props("flat dense no-caps")
-                self._export_button(df)
-            if df.empty:
-                ui.label("Nothing matches.").classes("text-sm")
-                return
-            results_table(df.head(PREVIEW_ROWS), clip_text=TEXT_PREVIEW)
-            if len(df) > PREVIEW_ROWS:
-                ui.label(f"Showing the first {PREVIEW_ROWS} of {len(df)}. Open in new tab to "
-                         f"see them all.").classes("text-xs opacity-60")
-
-    def _export_button(self, df: pd.DataFrame) -> None:
-        has_possible = "match" in df.columns and (df["match"] == "possible").any()
-        if not has_possible:
-            ui.button("Export", icon="download", on_click=lambda: download(df)) \
-                .props("flat dense no-caps")
-            return
-        with ui.button("Export", icon="download").props("flat dense no-caps"):
-            with ui.menu():
-                ui.menu_item("Clear matches only",
-                             on_click=lambda: download(df[df["match"] == "clear"]))
-                ui.menu_item("Clear and possible matches", on_click=lambda: download(df))
-
-    # --- what the controls do -----------------------------------------------------------------
+                    .props("dense outlined").classes("min-w-40").mark(f"ask-value-{i}-{k}")
 
     def subjects(self) -> list[str]:
         return [s for s in ask.VERB_SUBJECTS[self.state["verb"]]
@@ -221,6 +263,10 @@ class _Asker:
         return {k: f.title for k, f in self.fields.items()
                 if f.available and subject in f.subjects and f.conditions_for(subject)}
 
+    def missing(self) -> list[str]:
+        return sorted({NEEDS_WORDS.get(f.needs, f.needs) for f in self.fields.values()
+                       if not f.available})
+
     def role_choice(self) -> str:
         roles = self.state["roles"]
         return "both" if len(roles) > 1 else roles[0]
@@ -228,7 +274,7 @@ class _Asker:
     def set(self, key: str, value) -> None:
         self.state[key] = value
         self.normalise()
-        self.builder.refresh()
+        self.panel.refresh()
 
     def set_roles(self, choice: str) -> None:
         self.state["roles"] = ["Narrator", "Interviewer"] if choice == "both" else [choice]
@@ -238,21 +284,21 @@ class _Asker:
         if key == "field":
             row["condition"], row["values"] = "", []
         self.normalise()
-        self.builder.refresh()
+        self.panel.refresh()
 
     def set_value(self, row: dict, k: int, value) -> None:
         while len(row["values"]) <= k:
             row["values"].append("")
         row["values"][k] = value or ""
 
-    def add(self, key: str) -> None:
-        self.state[key].append({"field": "", "condition": "", "values": []})
+    def add(self, key: str, join: str = "and") -> None:
+        self.state[key].append(_blank_row(join))
         self.normalise()
-        self.builder.refresh()
+        self.panel.refresh()
 
     def remove(self, rows: list, k: int) -> None:
         del rows[k]
-        self.builder.refresh()
+        self.panel.refresh()
 
     def normalise(self) -> None:
         """Make every choice one the current verb and subject allow, keeping what still fits."""
@@ -261,7 +307,7 @@ class _Asker:
             s["subject"] = self.subjects()[0]
         if s["verb"] == "compare":
             while len(s["groups"]) < 2:
-                s["groups"].append({"field": "", "condition": "", "values": []})
+                s["groups"].append(_blank_row())
         else:
             s["groups"] = []
         options = self.field_options()
@@ -277,59 +323,152 @@ class _Asker:
                 row["condition"] = conds[0]
             want = ask.CONDITIONS[row["condition"]].n_values
             n = {"one": 1, "text": 1, "two": 2}.get(want)
-            vals = [v for v in row["values"] if want == "text" or v in f.values or v == ""]
+            free = want in ("text", "texts")
+            vals = [v for v in row["values"] if free or v in f.values or v == ""]
             row["values"] = (vals + [""] * 2)[:n] if n else vals
 
-    def use(self, question: ask.Question | None) -> None:
-        if question is None:
-            return
-        d = ask_quick.question_to(question)
-        for row in (*d["rows"], *d["groups"]):
-            row["values"] = ["" if v == ask_quick.BLANK else v for v in row["values"]]
-        self.state = d
-        self.normalise()
-        self.builder.refresh()
-
-    def current(self) -> ask.Question:
+    def built(self) -> ask.Question:
         s = self.state
         if any(not v for row in (*s["rows"], *s["groups"]) for v in row["values"] or [""]):
             raise ToolkitError("Pick something for every box first.")
         return ask_quick.question_from(s)
 
-    def run(self) -> None:
+    def ask_built(self) -> None:
         try:
-            q = self.current()
-            self.answer, self.question = ask.answer(self.project, q), q
+            q = self.built()
         except ToolkitError as e:
             guard(e)
             return
-        self.results.refresh()
+        self.results.ask(q)
 
     def save(self) -> None:
         try:
-            ask_quick.save(self.project, self.question, self.fields)
+            ask_quick.save(self.project, self.built(), self.fields)
         except ToolkitError as e:
             guard(e)
             return
-        ui.notify("Saved. It is now one of your quick questions.", type="positive")
-        self.quick_row.refresh()
-
-    def forget(self, button: str) -> None:
-        ask_quick.forget(self.project, button)
-        self.quick_row.refresh()
-
-    @staticmethod
-    def counts(df: pd.DataFrame) -> str:
-        if "match" not in df.columns:
-            return f"{len(df)} interviews"
-        clear = int((df["match"] == "clear").sum())
-        possible = len(df) - clear
-        return f"{len(df)} found" + (f" · {clear} clear, {possible} possible" if possible else "")
+        ui.notify("Saved. You will find it under Quick question.", type="positive")
 
 
-# --- shared by the page and the new-tab view --------------------------------------------------
+class _Results:
+    """An answer, and the trail of answers opened up from it. Shared by the page and the view."""
 
-def results_table(df: pd.DataFrame, clip_text: int | None = None) -> None:
+    def __init__(self, project, fields: dict[str, ask.Field], preview: bool = True):
+        self.project = project
+        self.fields = fields
+        self.preview = preview          # the page shows the first rows; the view shows them all
+        self.trail: list[tuple[ask.Question, pd.DataFrame]] = []
+
+    def draw(self) -> None:
+        self.dialog = ui.dialog()
+        self.body = ui.refreshable(self._body)
+        self.body()
+
+    def ask(self, q: ask.Question, keep_trail: bool = False) -> None:
+        try:
+            df = ask.answer(self.project, q)
+        except ToolkitError as e:
+            guard(e)
+            return
+        if not keep_trail:
+            self.trail = []
+        self.trail.append((q, df))
+        self.body.refresh()
+
+    def back(self) -> None:
+        self.trail.pop()
+        self.body.refresh()
+
+    def _body(self) -> None:
+        if not self.trail:
+            return
+        q, df = self.trail[-1]
+        quicks = [*ask_quick.builtin(), *ask_quick.saved(self.project)]
+        with ui.card().classes("w-full gap-2"):
+            if len(self.trail) > 1:
+                ui.button("Back", icon="arrow_back", on_click=self.back) \
+                    .props("flat dense no-caps").mark("ask-back")
+            ui.label(ask_quick.wording(q, quicks, self.fields)).classes("text-lg font-medium")
+            with ui.row().classes("items-center gap-2"):
+                ui.label(counts(df)).classes("text-sm opacity-70")
+                if "match" in df.columns and (df["match"] == "possible").any():
+                    info(MATCH_HELP)
+            with ui.row().classes("gap-2"):
+                if self.preview:
+                    ui.button("Open in new tab", icon="open_in_new",
+                              on_click=lambda: ui.navigate.to(view_href(q), new_tab=True)) \
+                        .props("flat dense no-caps")
+                export_button(df)
+            if df.empty:
+                ui.label("Nothing matches.").classes("text-sm")
+                return
+            if q.verb != "compare":
+                ui.label("Click a row to read it in its transcript."
+                         if "clip" in df.columns or "paragraph" in df.columns
+                         else "Click a row to see its clips.").classes("text-xs opacity-60")
+            shown = df.head(PREVIEW_ROWS) if self.preview else df
+            t = results_table(shown, clip_text=TEXT_PREVIEW if self.preview else None)
+            if q.verb != "compare":
+                t.classes("cursor-pointer")
+                t.on("rowClick", lambda e: self.open(df.iloc[int(e.args[1]["_id"])].to_dict(), q))
+            if self.preview and len(df) > PREVIEW_ROWS:
+                ui.label(f"Showing the first {PREVIEW_ROWS} of {len(df)}. Open in new tab to "
+                         f"see them all.").classes("text-xs opacity-60")
+
+    def open(self, result: dict, q: ask.Question) -> None:
+        if "clip" in result or "paragraph" in result:
+            self.show_transcript(result, q)
+        else:
+            self.ask(ask.narrow(self.project, q, result), keep_trail=True)
+
+    def show_transcript(self, result: dict, q: ask.Question) -> None:
+        p = ask.passage(self.project, result)
+        words = [v for r in q.rows if r.field == "words" and r.condition in FOUND_BY_WORDS
+                 for v in r.values]
+        self.dialog.clear()
+        with self.dialog, ui.card().classes("w-full max-w-3xl gap-1"):
+            with ui.row().classes("w-full items-center"):
+                ui.label(p.session).classes("text-lg font-medium flex-1")
+                ui.button(icon="close", on_click=self.dialog.close).props("flat round dense")
+            if result.get("label"):
+                ui.label(str(result["label"])).classes("text-sm opacity-70")
+            with ui.scroll_area().classes("w-full").style("height: 70vh"):
+                for r in p.transcript.itertuples():
+                    inside = p.first <= r.paragraph <= p.last
+                    with ui.row().classes("w-full gap-2 px-2 py-1 rounded no-wrap"
+                                          + (f" {theme.FOUND}" if inside else "")) \
+                            .props(f"id=ask-p{r.paragraph}"):
+                        ui.label(f"{r.time} {r.speaker}".strip()) \
+                            .classes("text-xs opacity-60 w-28 shrink-0")
+                        text = ui.html(marked(r.text, words if inside else []), sanitize=False) \
+                            .classes("text-sm")
+                        if inside:
+                            text.mark("ask-passage")
+        self.dialog.open()
+        ui.run_javascript(f"setTimeout(() => document.getElementById('ask-p{p.first}')"
+                          f"?.scrollIntoView({{block: 'center'}}), 100)")
+
+
+# --- shared helpers ---------------------------------------------------------------------------
+
+def marked(text: str, words: list[str]) -> str:
+    """The text, escaped, with the words it was found by marked."""
+    out = html.escape(str(text))
+    for w in sorted({w for w in words if w}, key=len, reverse=True):
+        out = re.sub(f"({re.escape(html.escape(w))})", rf'<mark class="{theme.FOUND}">\1</mark>',
+                     out, flags=re.IGNORECASE)
+    return out
+
+
+def counts(df: pd.DataFrame) -> str:
+    if "match" not in df.columns:
+        return f"{len(df)} interviews"
+    clear = int((df["match"] == "clear").sum())
+    possible = len(df) - clear
+    return f"{len(df)} found" + (f" · {clear} clear, {possible} possible" if possible else "")
+
+
+def results_table(df: pd.DataFrame, clip_text: int | None = None):
     shown = df.copy()
     if clip_text and "text" in shown.columns:
         shown["text"] = shown["text"].map(
@@ -339,8 +478,21 @@ def results_table(df: pd.DataFrame, clip_text: int | None = None) -> None:
                 "style": "white-space: normal; min-width: 18rem" if c == "text" else ""}
                for c in shown.columns]
     rows = [{"_id": i, **r} for i, r in enumerate(shown.to_dict("records"))]
-    ui.table(rows=rows, columns=columns, row_key="_id").classes("w-full") \
+    return ui.table(rows=rows, columns=columns, row_key="_id").classes("w-full") \
         .props("dense flat wrap-cells")
+
+
+def export_button(df: pd.DataFrame) -> None:
+    has_possible = "match" in df.columns and (df["match"] == "possible").any()
+    if not has_possible:
+        ui.button("Export", icon="download", on_click=lambda: download(df)) \
+            .props("flat dense no-caps")
+        return
+    with ui.button("Export", icon="download").props("flat dense no-caps"):
+        with ui.menu():
+            ui.menu_item("Clear matches only",
+                         on_click=lambda: download(df[df["match"] == "clear"]))
+            ui.menu_item("Clear and possible matches", on_click=lambda: download(df))
 
 
 def download(df: pd.DataFrame) -> None:
@@ -354,7 +506,7 @@ def view_href(question: ask.Question) -> str:
 
 
 def view_page(q: str = "") -> None:
-    """One answer, all of it, on a page of its own."""
+    """One answer, all of it, on a page of its own — still clickable."""
     with shell(HREF):
         if CONTEXT.project is None:
             return
@@ -362,17 +514,12 @@ def view_page(q: str = "") -> None:
         try:
             question = ask_quick.question_from(json.loads(q))
             fields = ask.fields(project)
-            df = ask.answer(project, question)
         except (ToolkitError, ValueError, KeyError) as e:
             guard(ToolkitError(f"Could not open that answer: {e}"))
             return
-        quicks = [*ask_quick.builtin(), *ask_quick.saved(project)]
-        ui.label(ask_quick.wording(question, quicks, fields)).classes("text-xl font-medium")
-        ui.label(_Asker.counts(df)).classes("text-sm opacity-70")
-        if df.empty:
-            ui.label("Nothing matches.").classes("text-sm")
-        else:
-            results_table(df)
+        results = _Results(project, fields, preview=False)
+        results.draw()
+        results.ask(question)
 
 
 def register() -> None:

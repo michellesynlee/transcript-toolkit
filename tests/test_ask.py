@@ -90,6 +90,7 @@ def tagged(imported):
 
 
 def _ask(project, verb, subject, *rows, roles=("Narrator",), groups=()):
+    """Rows are (field, condition, values) and may add a join: (..., "or")."""
     return ask.answer(project, Question(verb, subject, tuple(Row(*r) for r in rows), roles,
                                         tuple(Row(*g) for g in groups)))
 
@@ -248,3 +249,78 @@ def test_readback(tagged):
     assert ask.readback(q, ask.fields(tagged)) == \
         'Find clips where topic might talk about Education and words contains "school" ' \
         '(narrators and interviewers)'
+
+
+# --- or, and the text conditions --------------------------------------------------------------
+
+def test_or_joins_groups_and_binds_looser_than_and(tagged):
+    # (Education and Ann's Kenya clip) is empty, so only the "or" side is left: a1_2 and b_1
+    out = _ask(tagged, "find", "clips", ("topic:main", "talks_about", ("Education",)),
+               ("words", "contains", ("Kenya",)),
+               ("topic:main", "talks_about", ("Family",), "or"))
+    assert list(out["clip"]) == [f"{A1}_0002", f"{B}_0001"]
+    out = _ask(tagged, "find", "clips", ("topic:main", "talks_about", ("Work",)),
+               ("words", "contains", ("Kenya",), "or"))
+    assert list(out["clip"]) == [f"{A1}_0002", f"{A2}_0001"]
+
+
+def test_or_keeps_the_strongest_match(tagged):
+    out = _ask(tagged, "find", "clips", ("topic:main", "might_talk_about", ("Education",)),
+               ("speaker", "is", ("Bob",), "or"))
+    assert dict(zip(out["clip"], out["match"]))[f"{B}_0001"] == "clear"
+
+
+@pytest.mark.parametrize("condition,values,expected", [
+    ("contains", ("school",), ["I loved school and my teachers."]),
+    ("not_contains", ("school",), ["My family moved to Kenya.", "I taught at the election office.",
+                                   "Education mattered to my family."]),
+    ("contains_any", ("Kenya", "election"), ["My family moved to Kenya.",
+                                             "I taught at the election office."]),
+    ("contains_all", ("my", "family"), ["My family moved to Kenya.",
+                                        "Education mattered to my family."]),
+    ("whole_word", ("teach",), []),
+    ("whole_word", ("taught",), ["I taught at the election office."]),
+])
+def test_text_conditions(imported, condition, values, expected):
+    out = _ask(imported, "find", "paragraphs", ("words", condition, values))
+    assert list(out["text"]) == expected
+
+
+def test_does_not_contain_rules_out_the_speaker(imported):
+    out = _ask(imported, "find", "speakers", ("words", "not_contains", ("family",)))
+    assert out.empty                                      # both narrators say "family"
+
+
+def test_readback_says_or(tagged):
+    q = Question("find", "clips", (Row("topic:main", "talks_about", ("Work",)),
+                                   Row("words", "contains_any", ("Kenya", "Ghana"), "or")))
+    assert ask.readback(q) == \
+        'Find clips where topic talks about Work or words contains any of "Kenya", "Ghana" ' \
+        '(narrators)'
+
+
+# --- back to the transcript -------------------------------------------------------------------
+
+def test_a_clip_opens_at_its_place_in_the_session(tagged):
+    p = ask.passage(tagged, {"clip": f"{A1}_0002"})
+    assert (p.session, p.first, p.last) == (A1, 2, 2)
+    assert list(p.transcript["paragraph"]) == [0, 1, 2]          # the whole session, in order
+
+
+def test_a_paragraph_opens_at_its_place(imported):
+    row = _ask(imported, "find", "paragraphs", ("words", "contains", ("election",))).iloc[0]
+    p = ask.passage(imported, row.to_dict())
+    assert (p.session, p.first, p.last) == (A2, 1, 1)
+
+
+def test_an_interview_narrows_to_its_own_clips(tagged):
+    q = Question("find", "interviews", (Row("topic:main", "talks_about", ("Education",)),
+                                        Row("topic:main", "mostly_talks_about", ("Work",)),
+                                        Row("speaker", "is", ("Bob",), "or")))
+    narrowed = ask.narrow(tagged, q, {"interview": "alpha"})
+    assert narrowed.subject == "clips"
+    assert [(r.field, r.join) for r in narrowed.rows] == [
+        ("topic:main", "and"), ("interview", "and"),          # mostly dropped
+        ("speaker", "or"), ("interview", "and")]
+    out = ask.answer(tagged, narrowed)
+    assert list(out["clip"]) == [f"{A1}_0001", f"{A2}_0001"]
