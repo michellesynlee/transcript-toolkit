@@ -31,8 +31,11 @@ PREVIEW_ROWS = 50
 TEXT_PREVIEW = 300              # characters of a clip's text shown in the preview table
 
 ROLE_CHOICES = {"Narrator": "Narrators", "Interviewer": "Interviewers", "both": "Both"}
+# What to run, as the app names it. Expanding regions is a move on the Locations page, and only
+# worth naming once the tagging before it is done.
 NEEDS_WORDS = {"import": "Import", "label": "Label", "topics tag": "Topics",
-               "locations tag": "Locations", "locations map": "Locations (map)"}
+               "locations tag": "Locations",
+               "locations map": "“Expand regions into countries” on the Locations page"}
 MATCH_HELP = ("Clear: the clip is about it (the top topic score).\n"
               "Possible: it may touch on it (a score between zero and the top).")
 MODES = {"quick": "Quick question", "build": "Build your own"}
@@ -306,8 +309,12 @@ class _Asker:
                 if f.available and subject in f.subjects and f.conditions_for(subject)}
 
     def missing(self) -> list[str]:
-        return sorted({NEEDS_WORDS.get(f.needs, f.needs) for f in self.fields.values()
-                       if not f.available})
+        needs = {f.needs for f in self.fields.values() if not f.available}
+        if not any(k.startswith("topic:") for k in self.fields):    # no topic list yet at all
+            needs.add("topics tag")
+        if "locations tag" in needs:
+            needs.discard("locations map")
+        return [NEEDS_WORDS.get(n, n) for n in NEEDS_WORDS if n in needs]
 
     def role_choice(self) -> str:
         roles = self.state["roles"]

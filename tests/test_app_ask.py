@@ -306,3 +306,17 @@ async def test_nothing_to_summarize_says_so_without_a_button(user: User, open_ta
 def test_marking_marks_whole_words_the_way_they_matched():
     assert marked("Communities, a party", ["community", "art"]) == \
         '<mark class="tk-found">Communities</mark>, a party'
+
+
+@pytest.mark.asyncio
+async def test_it_names_the_locations_step_once(user: User, open_imported):
+    await user.open("/ask")
+    await user.should_see("more once you run Label, Topics, Locations.")
+
+
+@pytest.mark.asyncio
+async def test_after_tagging_it_names_the_move_still_to_run(user: User, open_tagged):
+    (open_tagged.outputs_dir / "locations/clip_countries.parquet").unlink()
+    await user.open("/ask")
+    await user.should_see("1 more once you run “Expand regions into countries” on the "
+                          "Locations page.")
